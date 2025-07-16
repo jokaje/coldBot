@@ -1,12 +1,13 @@
 # coldBotv2/app/services/memory_service.py
 
 from collections import deque
+from typing import Dict
 
 class MemoryService:
     _instance = None
     # Speichert Konversationen im Format {conversation_id: deque([...])}
-    conversations = {} 
-    MAX_HISTORY_LENGTH = 10 # Speichert die letzten 5 Runden (User + Bot)
+    conversations: Dict[str, deque] = {} 
+    MAX_HISTORY_LENGTH = 20 # Erhöht, um mehr Runden (inkl. Tool-Nutzung) zu speichern
 
     def __new__(cls):
         if cls._instance is None:
@@ -17,15 +18,15 @@ class MemoryService:
         """Holt die bisherige Konversationshistorie."""
         return list(self.conversations.get(conversation_id, []))
 
-    def add_to_history(self, conversation_id: str, user_message: dict, bot_message: dict):
-        """Fügt einen neuen Austausch zur Historie hinzu."""
+    # --- KORREKTUR: Die Funktion akzeptiert jetzt eine einzelne Nachricht ---
+    def add_to_history(self, conversation_id: str, message: dict):
+        """Fügt eine einzelne Nachricht (von user, assistant oder tool) zur Historie hinzu."""
         if conversation_id not in self.conversations:
             # Benutze eine deque für effizientes Anhängen und Begrenzen der Länge
             self.conversations[conversation_id] = deque(maxlen=self.MAX_HISTORY_LENGTH)
         
-        self.conversations[conversation_id].append(user_message)
-        self.conversations[conversation_id].append(bot_message)
-        print(f"History for {conversation_id} updated. Length: {len(self.conversations[conversation_id])}")
+        self.conversations[conversation_id].append(message)
+        print(f"History for {conversation_id} updated. Role '{message['role']}' added. Total length: {len(self.conversations[conversation_id])}")
 
 # Globale Instanz
 memory_service = MemoryService()
