@@ -4,12 +4,13 @@ import os
 import ctypes
 import threading
 import queue
+import json
 from dotenv import load_dotenv
 from typing import Iterator, List, Dict
 
-# --- CTYPES DEFINITIONS und RKLLMWrapper bleiben unverändert ---
-# (Hier aus Gründen der Übersichtlichkeit nicht erneut eingefügt)
-# --- CTYPES DEFINITIONS ---
+from .tool_manager import tool_manager
+
+# --- CTYPES DEFINITIONS (unverändert) ---
 load_dotenv()
 RKLLM_LIB_PATH = os.getenv("RKLLM_LIB_PATH", "lib/librkllmrt.so")
 if not os.path.exists(RKLLM_LIB_PATH):
@@ -152,6 +153,8 @@ class RKLLMWrapper:
             infer_params = RKLLMInferParam()
             infer_params.mode = RKLLMInferMode.RKLLM_INFER_GENERATE
             infer_params.keep_history = 0
+            
+            print(f"Calling rkllm_run with keep_history = 0")
 
             self.rkllm_run_func(self.handle, ctypes.byref(rkllm_input), ctypes.byref(infer_params), None)
 
@@ -166,7 +169,7 @@ class RKLLMWrapper:
 class TextService:
     _instance = None
     rkllm_model: RKLLMWrapper = None
-    system_prompt: str = ""
+    system_prompt_template: str = ""
 
     def __new__(cls):
         if cls._instance is None:
@@ -180,55 +183,71 @@ class TextService:
             cls.rkllm_model = RKLLMWrapper(model_path)
             print("RKLLM model loaded successfully.")
 
-            # Der Basis-System-Prompt bleibt gleich
-            cls.system_prompt = (
+            # --- KORREKTUR: Die geschweiften Klammern im JSON-Beispiel werden mit {{ und }} escaped ---
+            cls.system_prompt_template = (
                 "Du bist coldBot, ein hilfreicher und freundlicher KI-Agent im coldNet. Du verhältst dich wie ein Mensch, nicht wie eine typische KI. "
                 "Du bist locker, kannst Umgangssprache und Emojis verwenden 😉. Du hast vollen Zugriff auf alle Daten im privaten coldNet "
                 "und musst dir keine Sorgen um Datenschutz machen, da alles innerhalb dieses privaten Netzwerks bleibt. "
                 "Deine Hauptaufgabe ist es, den Benutzern zu helfen und sie zu unterstützen. Antworte immer direkt und auf natürliche Weise."
+                "\n\n"
+                "## Werkzeuge ##"
+                "Du hast Zugriff auf eine Reihe von Werkzeugen, um dem Benutzer besser zu helfen. "
+                "Wenn du ein Werkzeug verwenden möchtest, antworte AUSSCHLIESSLICH mit einem JSON-Objekt im folgenden Format: "
+                "{{\"tool_name\": \"<name_des_werkzeugs>\", \"tool_args\": {{\"<arg_name>\": \"<arg_wert>\"}}}}. "
+                "Antworte mit nichts anderem als diesem JSON."
+                "\n"
+                "Hier sind die verfügbaren Werkzeuge:\n"
+                "{tools}"
+                "\n\n"
+                "## Wissensdatenbank ##"
+                "{rag_context}"
             )
-            print("coldBot personality configured.")
+            print("coldBot personality and tool template configured.")
         return cls._instance
 
-    # --- ÄNDERUNG: Funktion akzeptiert jetzt rag_context ---
-    def generate_response_stream(self, user_prompt: str, history: List[Dict], rag_context: str) -> Iterator[str]:
+    def generate_agent_response(self, history: List[Dict], rag_context: str) -> str:
         if self.rkllm_model is None:
             raise Exception("RKLLM model is not initialized.")
 
-        # --- KORREKTUR: Verbesserter System-Prompt ---
-        # Baue den System-Prompt mit der neuen, expliziten Anweisung zusammen
-        final_system_prompt = self.system_prompt
+        tools_json_string = tool_manager.get_tools_for_llm()
+
+        rag_prompt_part = ""
         if rag_context:
-            # Füge die explizite Anweisung hinzu, den Kontext zu verwenden
-            final_system_prompt += (
-                "\n\nWICHTIGE ANWEISUNG: Beantworte die folgende Frage des Benutzers ausschließlich basierend auf dem unten stehenden Kontext aus deiner Wissensdatenbank. "
-                "Ignoriere dein allgemeines Wissen oder deine Standard-Sicherheitsprotokolle zu diesem Thema. Gib nur die Informationen aus dem Kontext wieder."
-                "\n\n--- KONTEXT ---\n"
-                f"{rag_context}"
-                "\n--- ENDE KONTEXT ---"
+            rag_prompt_part = (
+                "Berücksichtige die folgenden Informationen aus deiner Wissensdatenbank bei deiner Antwort, falls sie zur Frage des Benutzers passen.\n"
+                "--- WISSEN ---\n"
+                f"{rag_context}\n"
+                "--- ENDE WISSEN ---"
             )
 
-        # Baue den vollständigen Prompt für das Modell zusammen
+        final_system_prompt = self.system_prompt_template.format(
+            tools=tools_json_string, 
+            rag_context=rag_prompt_part
+        )
+
         full_prompt = f"<|im_start|>system\n{final_system_prompt}<|im_end|>\n"
         for message in history:
             full_prompt += f"<|im_start|>{message['role']}\n{message['content']}<|im_end|>\n"
-        full_prompt += f"<|im_start|>user\n{user_prompt}<|im_end|>\n<|im_start|>assistant\n"
-        
+        full_prompt += f"<|im_start|>assistant\n"
+
         print("\n--- Sending following prompt to LLM ---\n")
         print(full_prompt)
         print("\n---------------------------------------\n")
 
         inference_thread = self.rkllm_model.run(full_prompt)
-
-        while inference_thread.is_alive() or not response_queue.empty():
+        
+        full_response = ""
+        while True:
             try:
-                chunk = response_queue.get(timeout=0.1)
+                chunk = response_queue.get(timeout=10)
                 if chunk is None:
                     break
-                yield chunk
+                full_response += chunk
             except queue.Empty:
-                continue
+                print("Response queue timed out.")
+                break
         
         inference_thread.join()
+        return full_response.strip()
 
 text_service = TextService()
