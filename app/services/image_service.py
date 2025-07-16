@@ -15,7 +15,7 @@ class ImageService:
             cls._instance = super(ImageService, cls).__new__(cls)
             
             # Definiere das Modell, das wir von Hugging Face laden wollen
-            model_id = "Salesforce/blip-image-captioning-large"
+            model_id = "Salesforce/blip-image-captioning-base" 
             print(f"Loading image captioning model: {model_id}. This may take some time...")
 
             # Lade den Prozessor und das Modell
