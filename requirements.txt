@@ -1,0 +1,10 @@
+fastapi
+uvicorn[standard]
+python-dotenv
+python-multipart
+torch
+transformers
+Pillow
+# --- NEU für Langzeitgedächtnis (RAG) ---
+chromadb
+sentence-transformers

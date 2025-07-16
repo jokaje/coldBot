@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>coldBot Chat</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body { font-family: 'Inter', sans-serif; }
+        #chat-container::-webkit-scrollbar { width: 0; background: transparent; }
+        .tool-call { color: #9ca3af; font-style: italic; }
+    </style>
+</head>
+<body class="bg-gray-900 text-white flex flex-col h-screen p-4">
+
+    <header class="mb-4 text-center relative">
+        <h1 class="text-2xl font-bold">coldBot</h1>
+        <p class="text-sm text-gray-400">Dein Assistent im coldNet</p>
+        <button onclick="newChat()" class="absolute top-0 right-0 bg-blue-600 text-white px-3 py-1 rounded-lg text-sm hover:bg-blue-500">Neuer Chat</button>
+    </header>
+
+    <main id="chat-container" class="flex-1 overflow-y-auto bg-gray-800 rounded-lg p-4 space-y-4">
+        <!-- Chat-Nachrichten werden hier eingefügt -->
+    </main>
+
+    <footer class="mt-4">
+        <div id="image-preview-container" class="hidden items-center bg-gray-700 p-2 rounded-t-lg mb-[-1px]">
+            <img id="image-preview" src="" alt="Bildvorschau" class="w-16 h-16 object-cover rounded-md">
+            <p id="image-preview-text" class="ml-4 text-sm text-gray-300 flex-1">Analysiere Bild...</p>
+            <button onclick="removeImage()" class="p-2 text-gray-400 hover:text-white hover:bg-gray-600 rounded-full">
+                <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+            </button>
+        </div>
+
+        <div class="bg-gray-800 rounded-lg p-2 flex items-center" id="input-bar">
+            <input type="file" id="knowledge-upload" class="hidden" accept=".txt">
+            <button onclick="document.getElementById('knowledge-upload').click()" title="Wissen hinzufügen (.txt)" class="p-3 bg-gray-700 rounded-lg hover:bg-gray-600 transition-colors mr-2">
+                <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5v-15A2.5 2.5 0 0 1 6.5 2H20v20H6.5a2.5 2.5 0 0 1 0-5H20"></path><path d="M8 7h6"></path><path d="M8 11h8"></path></svg>
+            </button>
+            
+            <input type="file" id="image-upload" class="hidden" accept="image/*">
+            <button id="image-upload-button" onclick="document.getElementById('image-upload').click()" title="Bild hochladen" class="p-3 bg-gray-700 rounded-lg hover:bg-gray-600 transition-colors mr-2">
+                <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" x2="12" y1="3" y2="15"/></svg>
+            </button>
+            
+            <input type="text" id="message-input" class="flex-1 bg-transparent p-2 focus:outline-none" placeholder="Stelle eine Frage oder lade Wissen hoch...">
+            <button id="send-button" onclick="sendMessage()" class="p-3 bg-blue-600 rounded-lg hover:bg-blue-500 transition-colors">
+                <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" x2="11" y1="2" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+            </button>
+        </div>
+        <div id="status-text" class="text-center text-xs text-gray-500 mt-2 h-4"></div>
+    </footer>
+
+    <script>
+        let analyzedImageDescription = null;
+        let conversationId = null;
+
+        const imageUpload = document.getElementById('image-upload');
+        const knowledgeUpload = document.getElementById('knowledge-upload');
+        const messageInput = document.getElementById('message-input');
+        const sendButton = document.getElementById('send-button');
+        const chatContainer = document.getElementById('chat-container');
+        const statusText = document.getElementById('status-text');
+        
+        const imagePreviewContainer = document.getElementById('image-preview-container');
+        const imagePreview = document.getElementById('image-preview');
+        const imagePreviewText = document.getElementById('image-preview-text');
+        const inputBar = document.getElementById('input-bar');
+
+        window.onload = newChat;
+
+        function newChat() {
+            conversationId = crypto.randomUUID();
+            chatContainer.innerHTML = '';
+            addMessage("Hallo! Ich bin coldBot. Womit kann ich dir heute helfen? 😉", 'bot');
+            removeImage();
+            console.log("New chat started with ID:", conversationId);
+        }
+        
+        knowledgeUpload.onchange = async (event) => {
+            const file = event.target.files[0];
+            if (!file) return;
+
+            statusText.textContent = `Füge '${file.name}' zum Gedächtnis hinzu...`;
+            const formData = new FormData();
+            formData.append('file', file);
+
+            try {
+                const response = await fetch('/memory/add_document', { method: 'POST', body: formData });
+                const data = await response.json();
+                if (response.ok) {
+                    statusText.textContent = `Wissen aus '${file.name}' erfolgreich hinzugefügt!`;
+                    addMessage(`Okay, ich habe mir den Inhalt von '${file.name}' gemerkt.`, 'bot');
+                } else {
+                    throw new Error(data.detail);
+                }
+            } catch (error) {
+                statusText.textContent = 'Fehler beim Hinzufügen von Wissen.';
+                console.error(error);
+            } finally {
+                knowledgeUpload.value = '';
+                setTimeout(() => statusText.textContent = '', 3000);
+            }
+        };
+
+        imageUpload.onchange = async (event) => {
+            const file = event.target.files[0];
+            if (!file) return;
+
+            const reader = new FileReader();
+            reader.onload = (e) => imagePreview.src = e.target.result;
+            reader.readAsDataURL(file);
+            
+            imagePreviewContainer.classList.remove('hidden');
+            inputBar.classList.add('rounded-t-none');
+            imagePreviewText.textContent = 'Analysiere Bild...';
+            document.getElementById('image-upload-button').disabled = true;
+
+            const formData = new FormData();
+            formData.append('file', file);
+
+            try {
+                const response = await fetch('/chat/image', { method: 'POST', body: formData });
+                const data = await response.json();
+
+                if (response.ok) {
+                    analyzedImageDescription = data.image_description;
+                    imagePreviewText.textContent = `Analyse: "${analyzedImageDescription}"`;
+                } else { throw new Error(data.detail); }
+            } catch (error) {
+                imagePreviewText.textContent = 'Fehler bei der Analyse.';
+                console.error(error);
+            } finally {
+                imageUpload.value = '';
+            }
+        };
+
+        function removeImage() {
+            analyzedImageDescription = null;
+            imagePreview.src = '';
+            imagePreviewContainer.classList.add('hidden');
+            inputBar.classList.remove('rounded-t-none');
+            document.getElementById('image-upload-button').disabled = false;
+        }
+
+        async function sendMessage() {
+            const userMessage = messageInput.value.trim();
+            if (!userMessage && !analyzedImageDescription) return;
+
+            if(userMessage) addMessage(userMessage, 'user');
+            messageInput.value = '';
+            statusText.textContent = 'coldBot denkt nach...';
+            sendButton.disabled = true;
+
+            const botMessageDiv = createMessageContainer('bot');
+            
+            const imageContextToSend = analyzedImageDescription;
+
+            try {
+                const response = await fetch('/chat/multimodal', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        message: userMessage,
+                        image_description: imageContextToSend,
+                        conversation_id: conversationId
+                    })
+                });
+
+                if (!response.ok) throw new Error((await response.json()).detail);
+                
+                const reader = response.body.getReader();
+                const decoder = new TextDecoder();
+                
+                while (true) {
+                    const { value, done } = await reader.read();
+                    if (done) break;
+                    
+                    const chunk = decoder.decode(value, { stream: true });
+                    // NEU: Prüfen, ob es eine Tool-Nachricht ist
+                    if (chunk.startsWith('[') && chunk.endsWith(']')) {
+                        botMessageDiv.classList.add('tool-call');
+                    }
+                    botMessageDiv.textContent += chunk;
+                    chatContainer.scrollTop = chatContainer.scrollHeight;
+                }
+            } catch (error) {
+                botMessageDiv.textContent = 'Sorry, da ist etwas schiefgelaufen: ' + error.message;
+            } finally {
+                statusText.textContent = '';
+                if (imageContextToSend) {
+                    removeImage();
+                }
+                sendButton.disabled = false;
+            }
+        }
+        
+        messageInput.addEventListener('keypress', (e) => { if (e.key === 'Enter') sendMessage(); });
+
+        function createMessageContainer(sender) {
+            const messageDiv = document.createElement('div');
+            messageDiv.className = `p-3 rounded-lg max-w-lg break-words ${sender === 'user' ? 'bg-gray-700 self-end' : 'bg-blue-600 self-start'}`;
+            chatContainer.appendChild(messageDiv);
+            chatContainer.scrollTop = chatContainer.scrollHeight;
+            return messageDiv;
+        }
+
+        function addMessage(text, sender) {
+            const messageDiv = createMessageContainer(sender);
+            messageDiv.textContent = text;
+        }
+    </script>
+</body>
+</html>
