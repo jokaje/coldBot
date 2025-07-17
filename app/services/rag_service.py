@@ -23,6 +23,23 @@ class RAGService:
             
         return cls._instance
 
+    def _build_where_clause(self, filter_metadata: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Baut eine gültige 'where'-Klausel für ChromaDB, auch für mehrere Bedingungen.
+        """
+        if not filter_metadata:
+            return {}
+        
+        if len(filter_metadata) == 1:
+            return filter_metadata
+        
+        # Wenn mehr als ein Filterkriterium vorhanden ist, muss die $and-Syntax verwendet werden.
+        and_conditions = []
+        for key, value in filter_metadata.items():
+            and_conditions.append({key: value})
+        
+        return {"$and": and_conditions}
+
     def add_texts(self, texts: List[str], metadatas: List[Dict[str, Any]]):
         """
         Nimmt eine Liste von Texten, erstellt Vektoren und speichert sie mit den zugehörigen Metadaten.
@@ -52,10 +69,13 @@ class RAGService:
             
         query_embedding = self.model.encode([query_text]).tolist()
         
+        # --- KORREKTUR: Benutze die neue Helper-Funktion ---
+        where_clause = self._build_where_clause(filter_metadata)
+        
         results = self.collection.query(
             query_embeddings=query_embedding,
             n_results=n_results,
-            where=filter_metadata
+            where=where_clause
         )
         
         combined_results = []
@@ -64,15 +84,17 @@ class RAGService:
                 meta = results['metadatas'][0][i]
                 combined_results.append({"document": doc, "metadata": meta})
 
-        print(f"Found {len(combined_results)} results for query '{query_text}' with filter {filter_metadata}")
+        print(f"Found {len(combined_results)} results for query '{query_text}' with filter {where_clause}")
         return combined_results
 
-    # NEU: Funktion, um alle Einträge basierend auf Metadaten abzurufen
     def get_all_by_meta(self, filter_metadata: Dict[str, Any]) -> List[Dict[str, Any]]:
         """
         Ruft alle Einträge ab, die den Filterkriterien entsprechen.
         """
-        results = self.collection.get(where=filter_metadata)
+        # --- KORREKTUR: Benutze die neue Helper-Funktion ---
+        where_clause = self._build_where_clause(filter_metadata)
+        
+        results = self.collection.get(where=where_clause)
         
         combined_results = []
         if results and results['documents']:
@@ -80,7 +102,7 @@ class RAGService:
                 meta = results['metadatas'][i]
                 combined_results.append({"document": doc, "metadata": meta})
         
-        print(f"Retrieved {len(combined_results)} total entries with filter {filter_metadata}")
+        print(f"Retrieved {len(combined_results)} total entries with filter {where_clause}")
         return combined_results
 
 # Globale Instanz
