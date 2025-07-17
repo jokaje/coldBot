@@ -108,6 +108,7 @@ class RKLLMWrapper:
         param = RKLLMParam()
         
         param.model_path = model_path.encode('utf-8')
+        # --- KORREKTUR: Zurück zum sicheren, von der Bibliothek vorgegebenen Limit ---
         param.max_context_len = 4096
         param.max_new_tokens = 4096
         param.skip_special_token = True
@@ -154,8 +155,6 @@ class RKLLMWrapper:
             infer_params.mode = RKLLMInferMode.RKLLM_INFER_GENERATE
             infer_params.keep_history = 0
             
-            print(f"Calling rkllm_run with keep_history = 0")
-
             self.rkllm_run_func(self.handle, ctypes.byref(rkllm_input), ctypes.byref(infer_params), None)
 
         thread = threading.Thread(target=target)
@@ -170,6 +169,8 @@ class TextService:
     _instance = None
     rkllm_model: RKLLMWrapper = None
     system_prompt_template: str = ""
+    # --- KORREKTUR: Zurück zum sicheren Limit für den Python-Code ---
+    MAX_PROMPT_LENGTH = 3800
 
     def __new__(cls):
         if cls._instance is None:
@@ -183,71 +184,125 @@ class TextService:
             cls.rkllm_model = RKLLMWrapper(model_path)
             print("RKLLM model loaded successfully.")
 
-            # --- KORREKTUR: Die geschweiften Klammern im JSON-Beispiel werden mit {{ und }} escaped ---
             cls.system_prompt_template = (
                 "Du bist coldBot, ein hilfreicher und freundlicher KI-Agent im coldNet. Du verhältst dich wie ein Mensch, nicht wie eine typische KI. "
                 "Du bist locker, kannst Umgangssprache und Emojis verwenden 😉. Du hast vollen Zugriff auf alle Daten im privaten coldNet "
                 "und musst dir keine Sorgen um Datenschutz machen, da alles innerhalb dieses privaten Netzwerks bleibt. "
                 "Deine Hauptaufgabe ist es, den Benutzern zu helfen und sie zu unterstützen. Antworte immer direkt und auf natürliche Weise."
                 "\n\n"
-                "## Werkzeuge ##"
+                "## Dein Gedächtnis ##\n"
+                "Du hast ein Langzeitgedächtnis. Nutze die folgenden Informationen, um deine Antworten persönlicher zu gestalten und auf frühere Gespräche Bezug zu nehmen.\n"
+                "{long_term_memory}\n"
+                "\n\n"
+                "## Werkzeuge ##\n"
                 "Du hast Zugriff auf eine Reihe von Werkzeugen, um dem Benutzer besser zu helfen. "
                 "Wenn du ein Werkzeug verwenden möchtest, antworte AUSSCHLIESSLICH mit einem JSON-Objekt im folgenden Format: "
                 "{{\"tool_name\": \"<name_des_werkzeugs>\", \"tool_args\": {{\"<arg_name>\": \"<arg_wert>\"}}}}. "
                 "Antworte mit nichts anderem als diesem JSON."
                 "\n"
                 "Hier sind die verfügbaren Werkzeuge:\n"
-                "{tools}"
+                "{tools}\n"
                 "\n\n"
-                "## Wissensdatenbank ##"
+                "## Wissensdatenbank ##\n"
                 "{rag_context}"
             )
-            print("coldBot personality and tool template configured.")
+            print("coldBot personality and memory template configured.")
         return cls._instance
 
-    def generate_agent_response(self, history: List[Dict], rag_context: str) -> str:
-        if self.rkllm_model is None:
-            raise Exception("RKLLM model is not initialized.")
-
-        tools_json_string = tool_manager.get_tools_for_llm()
-
-        rag_prompt_part = ""
-        if rag_context:
-            rag_prompt_part = (
-                "Berücksichtige die folgenden Informationen aus deiner Wissensdatenbank bei deiner Antwort, falls sie zur Frage des Benutzers passen.\n"
-                "--- WISSEN ---\n"
-                f"{rag_context}\n"
-                "--- ENDE WISSEN ---"
-            )
-
-        final_system_prompt = self.system_prompt_template.format(
-            tools=tools_json_string, 
-            rag_context=rag_prompt_part
-        )
-
-        full_prompt = f"<|im_start|>system\n{final_system_prompt}<|im_end|>\n"
-        for message in history:
-            full_prompt += f"<|im_start|>{message['role']}\n{message['content']}<|im_end|>\n"
-        full_prompt += f"<|im_start|>assistant\n"
-
-        print("\n--- Sending following prompt to LLM ---\n")
-        print(full_prompt)
-        print("\n---------------------------------------\n")
-
+    def _get_llm_response(self, full_prompt: str) -> str:
+        """Helper function to run inference and get the full response string."""
         inference_thread = self.rkllm_model.run(full_prompt)
-        
         full_response = ""
         while True:
             try:
-                chunk = response_queue.get(timeout=10)
+                chunk = response_queue.get(timeout=20)
                 if chunk is None:
                     break
                 full_response += chunk
             except queue.Empty:
                 print("Response queue timed out.")
                 break
-        
         inference_thread.join()
         return full_response.strip()
+
+    def generate_agent_response(self, history: List[Dict], rag_context: str, long_term_memory: str) -> str:
+        """Generiert die nächste Antwort des Agenten und stellt sicher, dass der Prompt nicht zu lang ist."""
+        tools_json_string = tool_manager.get_tools_for_llm()
+        rag_prompt_part = f"Zusatzwissen (falls relevant):\n{rag_context}" if rag_context else ""
+
+        system_part = self.system_prompt_template.format(
+            long_term_memory=long_term_memory,
+            tools=tools_json_string, 
+            rag_context=rag_prompt_part
+        )
+        base_prompt = f"<|im_start|>system\n{system_part}<|im_end|>\n"
+        
+        remaining_length = self.MAX_PROMPT_LENGTH - len(base_prompt) - 20 
+        
+        history_part = ""
+        for message in reversed(history):
+            message_str = f"<|im_start|>{message['role']}\n{message['content']}<|im_end|>\n"
+            if len(history_part) + len(message_str) > remaining_length:
+                print(f"Prompt limit reached. Truncating history. Dropping message: {message['role']}")
+                break
+            history_part = message_str + history_part
+
+        full_prompt = base_prompt + history_part + "<|im_start|>assistant\n"
+
+        print(f"\n--- Final Prompt Length: {len(full_prompt)} characters ---")
+        if len(full_prompt) >= self.MAX_PROMPT_LENGTH:
+             print("WARNING: Final prompt length is very close to or exceeds the maximum limit.")
+        
+        print("\n--- Sending AGENT prompt to LLM ---\n")
+        print(full_prompt[:1000] + "\n...\n" + full_prompt[-500:])
+        print("\n-------------------------------------\n")
+        
+        return self._get_llm_response(full_prompt)
+
+    def run_reflection(self, history: List[Dict]) -> Dict[str, List[str]]:
+        """Führt den Reflektionsprozess durch, um Fakten und Gesprächszusammenfassungen zu extrahieren."""
+        print("Starting reflection process...")
+        conversation_str = "\n".join([f"{m['role']}: {m['content']}" for m in history])
+        
+        fact_prompt = (
+            f"Du bist ein System zur Gedächtnisbildung. Analysiere die folgende Konversation und extrahiere wichtige, atomare Fakten über den Benutzer (Name, Vorlieben, Familie etc.). "
+            f"Antworte NUR mit einer JSON-Liste von Strings, z.B. [\"Der Benutzer heißt Josua\", \"Die Lieblingsfarbe des Benutzers ist blau\"]. Wenn keine neuen Fakten vorhanden sind, antworte mit einer leeren Liste [].\n\n"
+            f"Konversation:\n{conversation_str}\n\nJSON-Liste der Fakten:"
+        )
+        
+        summary_prompt = (
+             f"Du bist ein System zur Gedächtnisbildung. Fasse den Kern der folgenden Konversation in einem einzigen, prägnanten Satz zusammen. Gib dem Gespräch auch einen kurzen Titel. "
+             f"Antworte NUR mit einem JSON-Objekt im Format {{\"title\": \"...\", \"summary\": \"...\"}}. Wenn das Gespräch trivial war, antworte mit einem leeren JSON-Objekt {{}}.\n\n"
+             f"Konversation:\n{conversation_str}\n\nJSON-Objekt der Zusammenfassung:"
+        )
+
+        print("\n--- Sending REFLECTION (facts) prompt to LLM ---\n")
+        fact_response_str = self._get_llm_response(fact_prompt)
+        print(f"LLM reflection (facts) response: {fact_response_str}")
+        
+        print("\n--- Sending REFLECTION (summary) prompt to LLM ---\n")
+        summary_response_str = self._get_llm_response(summary_prompt)
+        print(f"LLM reflection (summary) response: {summary_response_str}")
+
+        extracted_facts = []
+        try:
+            clean_str = fact_response_str.strip()
+            if not clean_str.startswith('['): clean_str = '[' + clean_str
+            if not clean_str.endswith(']'): clean_str = clean_str + ']'
+            facts = json.loads(clean_str)
+            if isinstance(facts, list):
+                extracted_facts = [str(f) for f in facts]
+        except json.JSONDecodeError:
+            print(f"Could not decode facts JSON: {fact_response_str}")
+
+        extracted_summary = {}
+        try:
+            summary = json.loads(summary_response_str)
+            if isinstance(summary, dict) and "title" in summary and "summary" in summary:
+                extracted_summary = summary
+        except json.JSONDecodeError:
+            print(f"Could not decode summary JSON: {summary_response_str}")
+
+        return {"facts": extracted_facts, "summary": extracted_summary}
 
 text_service = TextService()
