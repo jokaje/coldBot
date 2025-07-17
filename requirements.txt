@@ -5,6 +5,8 @@ python-multipart
 torch
 transformers
 Pillow
-# --- NEU für Langzeitgedächtnis (RAG) ---
 chromadb
 sentence-transformers
+# NEU für proaktives Verhalten
+websockets
+apscheduler
