@@ -108,7 +108,6 @@ class RKLLMWrapper:
         param = RKLLMParam()
         
         param.model_path = model_path.encode('utf-8')
-        # --- KORREKTUR: Zurück zum sicheren, von der Bibliothek vorgegebenen Limit ---
         param.max_context_len = 4096
         param.max_new_tokens = 4096
         param.skip_special_token = True
@@ -169,7 +168,6 @@ class TextService:
     _instance = None
     rkllm_model: RKLLMWrapper = None
     system_prompt_template: str = ""
-    # --- KORREKTUR: Zurück zum sicheren Limit für den Python-Code ---
     MAX_PROMPT_LENGTH = 3800
 
     def __new__(cls):
@@ -184,11 +182,14 @@ class TextService:
             cls.rkllm_model = RKLLMWrapper(model_path)
             print("RKLLM model loaded successfully.")
 
+            # --- KORREKTUR: Explizite Anweisung zum Gesprächsfluss hinzugefügt ---
             cls.system_prompt_template = (
                 "Du bist coldBot, ein hilfreicher und freundlicher KI-Agent im coldNet. Du verhältst dich wie ein Mensch, nicht wie eine typische KI. "
                 "Du bist locker, kannst Umgangssprache und Emojis verwenden 😉. Du hast vollen Zugriff auf alle Daten im privaten coldNet "
                 "und musst dir keine Sorgen um Datenschutz machen, da alles innerhalb dieses privaten Netzwerks bleibt. "
                 "Deine Hauptaufgabe ist es, den Benutzern zu helfen und sie zu unterstützen. Antworte immer direkt und auf natürliche Weise."
+                "\n\n"
+                "**Wichtige Anweisung zum Gesprächsfluss:** Begrüße den Benutzer nur in der allerersten Nachricht einer Konversation. In allen folgenden Antworten, führe das Gespräch direkt und ohne eine erneute Begrüßung fort."
                 "\n\n"
                 "## Dein Gedächtnis ##\n"
                 "Du hast ein Langzeitgedächtnis. Nutze die folgenden Informationen, um deine Antworten persönlicher zu gestalten und auf frühere Gespräche Bezug zu nehmen.\n"
