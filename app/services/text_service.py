@@ -108,8 +108,8 @@ class RKLLMWrapper:
         param = RKLLMParam()
         
         param.model_path = model_path.encode('utf-8')
-        param.max_context_len = 4096
-        param.max_new_tokens = 4096
+        param.max_context_len = 16000
+        param.max_new_tokens = 16000
         param.skip_special_token = True
         param.n_keep = -1
         param.top_k = 1
@@ -168,7 +168,7 @@ class TextService:
     _instance = None
     rkllm_model: RKLLMWrapper = None
     system_prompt_template: str = ""
-    MAX_PROMPT_LENGTH = 3800
+    MAX_PROMPT_LENGTH = 16000
 
     def __new__(cls):
         if cls._instance is None:
