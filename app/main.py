@@ -6,6 +6,8 @@ import os
 import json
 from datetime import datetime
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
+import re
+import asyncio
 
 from .services.text_service import text_service
 from .services.image_service import image_service
@@ -30,13 +32,13 @@ manager = ConnectionManager()
 app = FastAPI(
     title="coldBotv2 API",
     description="Modulare Offline KI-Agenten-API mit Unterbewusstsein",
-    version="3.2.0 (Finale Stabile Architektur)",
+    version="3.5.1 (Memory Fix)",
 )
 
-def run_and_save_reflection(conversation_id: str, user: str = "default_user"):
+async def run_and_save_reflection(conversation_id: str, user: str = "default_user"):
     history = memory_service.get_history(conversation_id)
     if len(history) < 2: return
-    results = text_service.run_reflection(history)
+    results = await text_service.run_reflection(history)
     if results.get("facts"):
         unique_facts = list(set(results["facts"]))
         if unique_facts:
@@ -51,23 +53,47 @@ def run_and_save_reflection(conversation_id: str, user: str = "default_user"):
 async def proactive_check():
     print(f"\n--- Running Proactive Check at {datetime.now()} ---")
     user = "default_user"
+    subconscious_state = subconscious_service.get_last_subconscious_state()
+    
+    if subconscious_state.get("current_activity") == "recherchieren":
+        thought = subconscious_state.get("internal_thought", "")
+        search_query_match = re.search(r"über (.*?) nachzudenken|über (.*?) recherchieren|frage mich, (.*)", thought, re.IGNORECASE)
+        if search_query_match:
+            query = next((item for item in search_query_match.groups() if item is not None), None)
+            if query:
+                print(f"Subconscious is curious about '{query}'. Starting proactive research.")
+                search_result = tool_manager.execute_tool("web_search", {"query": query})
+                fact_to_save = f"Recherche-Ergebnis zu '{query}': {search_result}"
+                tool_manager.execute_tool("save_fact_to_memory", {"fact": fact_to_save, "user": user})
+                
+                subconscious_service._update_subconscious_state({
+                    "internal_thought": f"Ich habe gerade etwas über '{query}' gelernt. Das war interessant.",
+                    "suggested_stance": "nachdenklich",
+                    "current_activity": "warten"
+                })
+                return
+
     all_facts = rag_service.get_all_by_meta(filter_metadata={"source": "core_memory_fact", "user": user})
     all_episodes = rag_service.get_all_by_meta(filter_metadata={"source": "core_memory_episode", "user": user})
     if not all_facts and not all_episodes: return
+    
     memory_prompt_part = "Fakten über den Benutzer:\n" + "\n".join([f"- {res['document']}" for res in all_facts]) + "\n\nFrühere Gespräche:\n" + "\n".join([f"- {res['document']}" for res in all_episodes])
     proactive_prompt = (f"Du bist die proaktive Steuerungseinheit von coldBot. Analysiere das folgende Gedächtnis und die aktuelle Uhrzeit: {datetime.now().strftime('%Y-%m-%d %H:%M')}. Gibt es basierend darauf eine relevante, hilfreiche Nachricht, die du dem Benutzer senden solltest? Antworte NUR mit der Nachricht oder mit 'Keine Aktion erforderlich.'\n\n## Gedächtnis ##\n{memory_prompt_part}\n\nNachricht an den Benutzer (oder 'Keine Aktion erforderlich.'):")
-    llm_decision = text_service._get_llm_response(proactive_prompt)
-    if llm_decision != "Keine Aktion erforderlich.":
+    llm_decision = await text_service._get_llm_response(proactive_prompt)
+    
+    if llm_decision and "keine aktion" not in llm_decision.lower():
         for client_id in list(manager.active_connections.keys()):
              proactive_message = {"type": "proactive_message", "content": llm_decision}
              await manager.send_personal_message(json.dumps(proactive_message), client_id)
 
 scheduler = AsyncIOScheduler()
 scheduler.add_job(proactive_check, 'interval', hours=1)
+
 @app.on_event("startup")
 async def startup_event():
     scheduler.start(); print("Scheduler started.")
     subconscious_service.start_thought_loop()
+
 @app.on_event("shutdown")
 async def shutdown_event():
     scheduler.shutdown(); print("Scheduler shut down.")
@@ -81,12 +107,13 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str):
 
 def extract_action_json(llm_action_str):
     try:
-        outer = json.loads(llm_action_str)
-        if isinstance(outer, dict):
-            if "Handlung" in outer and isinstance(outer['Handlung'], dict):
-                return outer['Handlung']
-            if "tool_name" in outer or "final_answer" in outer:
-                return outer
+        match = re.search(r'\{.*\}', llm_action_str, re.DOTALL)
+        if match:
+            clean_json_str = match.group(0)
+            outer = json.loads(clean_json_str)
+            if isinstance(outer, dict):
+                if "tool_name" in outer or "final_answer" in outer:
+                    return outer
     except Exception:
         pass
     return None
@@ -99,7 +126,6 @@ class MultimodalMessage(BaseModel):
 @app.post("/chat/multimodal", tags=["Chat"])
 async def multimodal_chat(message: MultimodalMessage, background_tasks: BackgroundTasks):
     client_id = message.conversation_id
-
     user_prompt = message.message
     if message.image_description:
         image_context = f"[Bildanalyse: {message.image_description}]"
@@ -117,65 +143,59 @@ async def multimodal_chat(message: MultimodalMessage, background_tasks: Backgrou
         rag_context = "\n".join([res['document'] for res in rag_docs])
         fact_results = rag_service.search(query_text=user_prompt, n_results=3, filter_metadata={"source": "core_memory_fact"})
         episode_results = rag_service.search(query_text=user_prompt, n_results=2, filter_metadata={"source": "core_memory_episode"})
-        long_term_memory = "Fakten:\n" + "\n".join([res['document'] for res in fact_results]) + "\nEpisoden:\n" + "\n".join([res['document'] for res in episode_results])
+        long_term_memory = "Fakten:\n" + "\n".join([f"- {res['document']}" for res in fact_results]) + "\nEpisoden:\n" + "\n".join([res['document'] for res in episode_results])
         current_subconscious_state = subconscious_service.get_last_subconscious_state()
 
-        llm_action_str = text_service.generate_action(history, rag_context, long_term_memory, current_subconscious_state)
+        # --- HIER IST DER WIEDEREINGEFÜGTE FIX FÜR ERINNERUNGSFRAGEN ---
+        memory_keywords = ["erinner", "erinnerst", "erinnerung", "letzte", "letztes", "voriges", "gespräch", "woran", "weiß"]
+        if any(word in user_prompt.lower() for word in memory_keywords):
+            print("Memory keyword detected, overriding LLM to construct memory response.")
+            facts = "\n".join([res['document'] for res in fact_results])
+            episodes = "\n".join([res['document'] for res in episode_results])
+            summary = ""
+            if episodes:
+                summary += "Ich erinnere mich an folgende Gesprächsthemen:\n" + episodes
+            if facts:
+                summary += "\n\nZudem habe ich mir folgende Fakten gemerkt:\n" + facts
+            
+            final_response_text = summary if summary else "Ich habe dazu leider keine spezifischen Erinnerungen gefunden."
+            
+            memory_service.add_to_history(client_id, {"role": "assistant", "content": json.dumps({"final_answer": final_response_text})})
+            llm_chunk_message = {"type": "llm_chunk", "content": final_response_text}
+            await manager.send_personal_message(json.dumps(llm_chunk_message), client_id)
+            if final_response_text:
+                background_tasks.add_task(run_and_save_reflection, client_id, user="default_user")
+            break # Wichtig: Die Schleife hier beenden
+
+        llm_action_str = await text_service.generate_action(history, rag_context, long_term_memory, current_subconscious_state)
         action_json = extract_action_json(llm_action_str)
 
-        # --- Erweiterung für Erinnerungsfragen ---
-        if action_json is not None:
-            # Spezialfall: Modell will "save_fact_to_memory" nutzen, obwohl User nach Erinnerung fragt
-            if "tool_name" in action_json:
-                if (
-                    action_json["tool_name"] == "save_fact_to_memory"
-                    and any(w in user_prompt.lower() for w in ["erinner", "erinnerst", "erinnerung", "letzte", "letztes", "voriges", "gespräch", "woran", "weiß"])
-                ):
-                    facts = "\n".join([res['document'] for res in fact_results])
-                    episodes = "\n".join([res['document'] for res in episode_results])
-                    summary = ""
-                    if episodes:
-                        summary += "Das letzte Gespräch drehte sich um:\n" + episodes
-                    if facts:
-                        summary += "\nWeitere Erinnerungen/Fakten:\n" + facts
-                    final_response_text = summary if summary else "Mir liegen zu diesem Thema leider keine gespeicherten Erinnerungen/Episoden vor."
-                    memory_service.add_to_history(client_id, {"role": "assistant", "content": json.dumps({"final_answer": final_response_text})})
-                    llm_chunk_message = {"type": "llm_chunk", "content": final_response_text}
-                    await manager.send_personal_message(json.dumps(llm_chunk_message), client_id)
-                    if final_response_text:
-                        background_tasks.add_task(run_and_save_reflection, client_id)
-                    break
+        if action_json and "tool_name" in action_json:
+            tool_name = action_json["tool_name"]
+            tool_args = action_json.get("tool_args", {})
+            tool_message = {"type": "tool_usage", "content": f"Benutze Werkzeug: {tool_name}..."}
+            await manager.send_personal_message(json.dumps(tool_message), client_id)
+            tool_result = tool_manager.execute_tool(tool_name, tool_args)
+            memory_service.add_to_history(client_id, {"role": "assistant", "content": json.dumps(action_json)})
+            memory_service.add_to_history(client_id, {"role": "tool", "content": str(tool_result)})
+            continue
 
-                tool_name = action_json["tool_name"]
-                tool_args = action_json.get("tool_args", {})
-                tool_message = {"type": "tool_usage", "content": f"Benutze Werkzeug: {tool_name}..."}
-                await manager.send_personal_message(json.dumps(tool_message), client_id)
-                tool_result = tool_manager.execute_tool(tool_name, tool_args)
-                memory_service.add_to_history(client_id, {"role": "assistant", "content": json.dumps(action_json)})
-                memory_service.add_to_history(client_id, {"role": "tool", "content": str(tool_result)})
-                continue
-
-            elif "final_answer" in action_json:
-                final_response_text = action_json["final_answer"]
-                memory_service.add_to_history(client_id, {"role": "assistant", "content": json.dumps(action_json)})
-                if isinstance(final_response_text, str):
-                    llm_chunk_message = {"type": "llm_chunk", "content": final_response_text}
-                    await manager.send_personal_message(json.dumps(llm_chunk_message), client_id)
-                else:
-                    for chunk in final_response_text:
-                        llm_chunk_message = {"type": "llm_chunk", "content": chunk}
-                        await manager.send_personal_message(json.dumps(llm_chunk_message), client_id)
-                if final_response_text:
-                    background_tasks.add_task(run_and_save_reflection, client_id)
-                break
-        # Fallback: keine valide JSON-Antwort
+        elif action_json and "final_answer" in action_json:
+            final_response_text = action_json["final_answer"]
+            memory_service.add_to_history(client_id, {"role": "assistant", "content": json.dumps(action_json)})
+            llm_chunk_message = {"type": "llm_chunk", "content": final_response_text}
+            await manager.send_personal_message(json.dumps(llm_chunk_message), client_id)
+            if final_response_text:
+                background_tasks.add_task(run_and_save_reflection, client_id, user="default_user")
+            break
+        
         print(f"LLM produced invalid action, treating as final answer: {llm_action_str}")
         final_response_text = llm_action_str
         memory_service.add_to_history(client_id, {"role": "assistant", "content": final_response_text})
         llm_chunk_message = {"type": "llm_chunk", "content": final_response_text}
         await manager.send_personal_message(json.dumps(llm_chunk_message), client_id)
         if final_response_text:
-            background_tasks.add_task(run_and_save_reflection, client_id)
+            background_tasks.add_task(run_and_save_reflection, client_id, user="default_user")
         break
 
     return JSONResponse(content={"status": "success", "message": "Agent loop finished."})
