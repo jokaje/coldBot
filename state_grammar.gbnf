@@ -1,5 +1,5 @@
-# Definiert ein Objekt mit exakt zwei erforderlichen Schlüsseln
-root ::= "{" ws "\"internal_thought\"" ws ":" ws string "," ws "\"suggested_stance\"" ws ":" ws string "}"
+# Definiert ein Objekt mit exakt drei erforderlichen Schlüsseln
+root ::= "{" ws "\"internal_thought\"" ws ":" ws string "," ws "\"suggested_stance\"" ws ":" ws string "," ws "\"current_activity\"" ws ":" ws string "}"
 
 # Standarddefinitionen für JSON-Werte
 string ::=
@@ -10,5 +10,3 @@ string ::=
 
 # Optionaler Leerraum
 ws ::= ([ \t\n]*)
-
-
