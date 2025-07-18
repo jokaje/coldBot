@@ -3,8 +3,9 @@ import ctypes
 import threading
 import queue
 import json
+import asyncio
 from dotenv import load_dotenv
-from typing import List, Dict
+from typing import List, Dict, Any
 
 from .tool_manager import tool_manager
 
@@ -84,24 +85,12 @@ class RKLLMResult(ctypes.Structure):
         ("token_id", ctypes.c_int),
     ]
 
-response_queue = queue.Queue()
-
-def rkllm_callback(result, userdata, state):
-    if state == LLMCallState.RKLLM_RUN_NORMAL:
-        response_queue.put(result.contents.text.decode('utf-8', errors='ignore'))
-    elif state == LLMCallState.RKLLM_RUN_FINISH:
-        response_queue.put(None)
-    elif state == LLMCallState.RKLLM_RUN_ERROR:
-        print("RKLLM Error occurred.")
-        response_queue.put(None)
-    return 0
-
 CALLBACK_TYPE = ctypes.CFUNCTYPE(ctypes.c_int, ctypes.POINTER(RKLLMResult), ctypes.c_void_p, ctypes.c_int)
-c_callback = CALLBACK_TYPE(rkllm_callback)
 
 class RKLLMWrapper:
     def __init__(self, model_path: str):
         self.handle = RKLLM_Handle_t()
+        self.c_callback = CALLBACK_TYPE(self._rkllm_callback)
         param = RKLLMParam()
         param.model_path = model_path.encode('utf-8')
         param.max_context_len = 16000
@@ -127,34 +116,60 @@ class RKLLMWrapper:
         param.extend_param.use_cross_attn = 0
         param.extend_param.enabled_cpus_num = 4
         param.extend_param.enabled_cpus_mask = (1 << 4)|(1 << 5)|(1 << 6)|(1 << 7)
+        
         rkllm_lib.rkllm_init.argtypes = [ctypes.POINTER(RKLLM_Handle_t), ctypes.POINTER(RKLLMParam), CALLBACK_TYPE]
         rkllm_lib.rkllm_init.restype = ctypes.c_int
-        ret = rkllm_lib.rkllm_init(ctypes.byref(self.handle), ctypes.byref(param), c_callback)
+        ret = rkllm_lib.rkllm_init(ctypes.byref(self.handle), ctypes.byref(param), self.c_callback)
         if ret != 0:
             raise Exception(f"RKLLM init failed with error code: {ret}")
+            
         self.rkllm_run_func = rkllm_lib.rkllm_run
         self.rkllm_run_func.argtypes = [RKLLM_Handle_t, ctypes.POINTER(RKLLMInput), ctypes.POINTER(RKLLMInferParam), ctypes.c_void_p]
         self.rkllm_run_func.restype = ctypes.c_int
-    def run(self, prompt: str):
-        def target():
-            rkllm_input = RKLLMInput()
-            rkllm_input.role = "user".encode('utf-8')
-            rkllm_input.enable_thinking = False
-            rkllm_input.input_type = RKLLMInputType.RKLLM_INPUT_PROMPT
-            rkllm_input.input_data = prompt.encode('utf-8')
-            infer_params = RKLLMInferParam()
-            infer_params.mode = RKLLMInferMode.RKLLM_INFER_GENERATE
-            infer_params.keep_history = 0
-            self.rkllm_run_func(self.handle, ctypes.byref(rkllm_input), ctypes.byref(infer_params), None)
-        thread = threading.Thread(target=target)
-        thread.start()
-        return thread
+        self.current_queue = None
+
+    def _rkllm_callback(self, result, userdata, state):
+        if self.current_queue:
+            if state == LLMCallState.RKLLM_RUN_NORMAL:
+                self.current_queue.put(result.contents.text.decode('utf-8', errors='ignore'))
+            elif state in [LLMCallState.RKLLM_RUN_FINISH, LLMCallState.RKLLM_RUN_ERROR]:
+                if state == LLMCallState.RKLLM_RUN_ERROR:
+                    print("RKLLM Error occurred during callback.")
+                self.current_queue.put(None)
+        return 0
+
+    def run_blocking(self, prompt: str) -> str:
+        response_queue = queue.Queue()
+        self.current_queue = response_queue
+        
+        rkllm_input = RKLLMInput()
+        rkllm_input.role = "user".encode('utf-8')
+        rkllm_input.input_type = RKLLMInputType.RKLLM_INPUT_PROMPT
+        rkllm_input.input_data = prompt.encode('utf-8')
+        infer_params = RKLLMInferParam()
+        infer_params.mode = RKLLMInferMode.RKLLM_INFER_GENERATE
+        infer_params.keep_history = 0
+        
+        self.rkllm_run_func(self.handle, ctypes.byref(rkllm_input), ctypes.byref(infer_params), None)
+        
+        full_response = ""
+        while True:
+            try:
+                chunk = response_queue.get(timeout=60)
+                if chunk is None: break
+                full_response += chunk
+            except queue.Empty:
+                print("Response queue timed out.")
+                break
+        return full_response.strip()
+
     def release(self):
         rkllm_lib.rkllm_destroy(self.handle)
 
 class TextService:
     _instance = None
     rkllm_model: RKLLMWrapper = None
+    # --- DER ENTSCHEIDENDE FIX: Eine einfache, robuste Thread-Sperre ---
     _lock = threading.Lock()
 
     def __new__(cls):
@@ -168,21 +183,22 @@ class TextService:
             print("RKLLM model loaded successfully.")
         return cls._instance
 
-    def _get_llm_response(self, full_prompt: str) -> str:
-        with self._lock:
-            inference_thread = self.rkllm_model.run(full_prompt)
-            full_response = ""
-            while True:
-                try:
-                    chunk = response_queue.get(timeout=30)
-                    if chunk is None: break
-                    full_response += chunk
-                except queue.Empty:
-                    print("Response queue timed out."); break
-            inference_thread.join()
-            return full_response.strip()
+    async def _get_llm_response(self, full_prompt: str) -> str:
+        loop = asyncio.get_event_loop()
+        
+        def blocking_call():
+            # Diese Funktion wird in einem separaten Thread ausgeführt.
+            # Sie wartet, bis sie die Sperre erhält, bevor sie das Modell aufruft.
+            with self._lock:
+                print(f"Thread {threading.get_ident()}: Acquired lock, running LLM.")
+                result = self.rkllm_model.run_blocking(full_prompt)
+                print(f"Thread {threading.get_ident()}: LLM run finished, releasing lock.")
+                return result
 
-    def generate_action(self, history: List[Dict], rag_context: str, long_term_memory: str, subconscious_state: Dict[str, str]) -> str:
+        # Führe die blockierende Funktion im Executor-Pool von asyncio aus.
+        return await loop.run_in_executor(None, blocking_call)
+
+    async def generate_action(self, history: List[Dict], rag_context: str, long_term_memory: str, subconscious_state: Dict[str, str]) -> str:
         tools_json_string = tool_manager.get_tools_for_llm()
         system_prompt = (
             "Du bist coldBot, ein KI-Agent. Denke gezielt Schritt für Schritt. Es gibt nur zwei Aktionsarten:\n\n"
@@ -191,8 +207,6 @@ class TextService:
             "2. Alles andere: Gib eine finale Antwort:\n"
             "   {\"final_answer\": \"deine Antwort\"}\n\n"
             "KEIN verschachteltes JSON wie {\"Gedanke\"...}, KEINE unnötigen Nebentexte!\n"
-            "Wenn der Benutzer nach Erinnerungen, Fakten, dem letzten Gespräch oder Erkenntnissen fragt (z.B. 'Weißt du noch...?', 'Erinnerst du dich an...?', 'Was war unser letztes Gespräch?'), fasse die wichtigsten gespeicherten Fakten/Episoden in deinem Langzeitgedächtnis oder aus vergangenen Gesprächen als Text zusammen und ANTWORTE IMMER mit final_answer. Dafür darfst du KEIN Werkzeug aufrufen!\n"
-            "Wenn der Prompt mit '[Bildanalyse: ...]' beginnt, beschreibe das Bild und beantworte die Frage IMMER direkt als final_answer (außer ein klar benanntes Werkzeug wird gebraucht).\n"
             "\n### Tools ###\n"
             f"{tools_json_string}\n"
             f"- Haltung: {subconscious_state.get('suggested_stance','neutral')}\n"
@@ -202,21 +216,22 @@ class TextService:
         history_part = ""
         for message in history:
             role = "Benutzer" if message['role'] == 'user' else message['role']
+            content = message.get('content', '')
             if message['role'] == 'assistant':
                 try:
-                    action_json = json.loads(message['content'])
+                    action_json = json.loads(content)
                     if 'tool_name' in action_json:
                         history_part += f"Benutztes Werkzeug: {action_json['tool_name']} - Args: {action_json.get('tool_args', {})}\n"
                     elif 'final_answer' in action_json:
                         history_part += f"Bot-Antwort: {action_json['final_answer']}\n"
                     else:
-                        history_part += f"Bot: {message['content']}\n"
-                except Exception:
-                    history_part += f"Bot: {message['content']}\n"
+                        history_part += f"Bot: {content}\n"
+                except (json.JSONDecodeError, TypeError):
+                    history_part += f"Bot: {content}\n"
             elif message['role'] == 'tool':
-                history_part += f"Werkzeug-Ergebnis: {message['content']}\n"
+                history_part += f"Werkzeug-Ergebnis: {content}\n"
             else:
-                history_part += f"{role}: {message['content']}\n"
+                history_part += f"{role}: {content}\n"
 
         full_prompt = (
             f"<|im_start|>system\n{system_prompt}<|im_end|>\n"
@@ -225,32 +240,39 @@ class TextService:
             f"<|im_end|>\n"
             f"<|im_start|>assistant\n"
         )
-        return self._get_llm_response(full_prompt)
+        return await self._get_llm_response(full_prompt)
 
-    def run_reflection(self, history: List[Dict]) -> Dict[str, List[str]]:
+    async def run_reflection(self, history: List[Dict]) -> Dict[str, Any]:
         print("Starting reflection process...")
-        conversation_str = "\n".join([f"{m['role']}: {m['content']}" for m in history])
+        conversation_str = "\n".join([f"{m['role']}: {m.get('content', '')}" for m in history])
         fact_prompt = (
-            f"Du bist ein System zur Gedächtnisbildung. Extrahiere wichtige, atomare Fakten über den Benutzer (Name, Vorlieben etc.) aus folgender Konversation. Antworte NUR mit einer JSON-Liste von Strings, z.B. [\"Der Benutzer heißt Josua\"]. Wenn keine neuen Fakten vorhanden sind, antworte mit [].\n\nKonversation:\n{conversation_str}\n\nJSON-Liste der Fakten:"
+            f"Du bist ein System zur Gedächtnisbildung. Extrahiere wichtige, atomare Fakten über den Benutzer aus folgender Konversation. Antworte NUR mit einer JSON-Liste von Strings, z.B. [\"Der Benutzer heißt Josua\"]. Wenn keine neuen Fakten vorhanden sind, antworte mit [].\n\nKonversation:\n{conversation_str}\n\nJSON-Liste der Fakten:"
         )
         summary_prompt = (
-            f"Du bist ein System zur Gedächtnisbildung. Fasse den Kern der folgenden Konversation in einem Satz zusammen und gib ihr einen Titel. Antworte NUR mit einem JSON-Objekt im Format {{\"title\": \"...\", \"summary\": \"...\"}}. Wenn das Gespräch trivial war, antworte mit {{}}.\n\nKonversation:\n{conversation_str}\n\nJSON-Objekt der Zusammenfassung:"
+            f"Du bist ein System zur Gedächtnisbildung. Fasse den Kern der folgenden Konversation zusammen und gib ihr einen Titel. Antworte NUR mit einem JSON-Objekt im Format {{\"title\": \"...\", \"summary\": \"...\"}}. Wenn das Gespräch trivial war, antworte mit {{}}.\n\nKonversation:\n{conversation_str}\n\nJSON-Objekt der Zusammenfassung:"
         )
-        fact_response_str = self._get_llm_response(fact_prompt)
-        summary_response_str = self._get_llm_response(summary_prompt)
+        
+        fact_response_str = await self._get_llm_response(fact_prompt)
+        summary_response_str = await self._get_llm_response(summary_prompt)
+        
         extracted_facts = []
         try:
             clean_str = fact_response_str.strip()
-            if not clean_str.startswith('['): clean_str = '[' + clean_str
-            if not clean_str.endswith(']'): clean_str = clean_str + ']'
-            facts = json.loads(clean_str)
-            if isinstance(facts, list): extracted_facts = [str(f) for f in facts]
+            if clean_str and clean_str != "[]":
+                if not clean_str.startswith('['): clean_str = '[' + clean_str
+                if not clean_str.endswith(']'): clean_str = clean_str + ']'
+                facts = json.loads(clean_str)
+                if isinstance(facts, list): extracted_facts = [str(f) for f in facts if f]
         except json.JSONDecodeError: print(f"Could not decode facts JSON: {fact_response_str}")
+
         extracted_summary = {}
         try:
-            summary = json.loads(summary_response_str)
-            if isinstance(summary, dict) and "title" in summary and "summary" in summary: extracted_summary = summary
+            if summary_response_str and summary_response_str != "{}":
+                summary = json.loads(summary_response_str)
+                if isinstance(summary, dict) and "title" in summary and "summary" in summary:
+                    extracted_summary = summary
         except json.JSONDecodeError: print(f"Could not decode summary JSON: {summary_response_str}")
+
         return {"facts": extracted_facts, "summary": extracted_summary}
 
 text_service = TextService()
