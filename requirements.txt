@@ -7,6 +7,8 @@ transformers
 Pillow
 chromadb
 sentence-transformers
-# NEU für proaktives Verhalten
 websockets
 apscheduler
+requests
+beautifulsoup4
+duckduckgo-search
