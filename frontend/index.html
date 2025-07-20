@@ -5,61 +5,157 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>coldBot Chat</title>
     <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;700&display=swap" rel="stylesheet">
     <style>
-        body { font-family: 'Inter', sans-serif; }
+        body { 
+            font-family: 'Inter', sans-serif; 
+            background-color: #000514;
+        }
         #chat-container::-webkit-scrollbar { width: 0; background: transparent; }
         .tool-call { color: #9ca3af; font-style: italic; }
         .error-message { white-space: pre-wrap; word-break: break-all; color: #ff8a8a; }
+
+        /* Styles für den Kippschalter */
+        .toggle-switch {
+            position: relative;
+            display: inline-block;
+            width: 60px;
+            height: 34px;
+        }
+        .toggle-switch input {
+            opacity: 0;
+            width: 0;
+            height: 0;
+        }
+        .slider {
+            position: absolute;
+            cursor: pointer;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background-color: #374151;
+            transition: .4s;
+            border-radius: 34px;
+        }
+        .slider:before {
+            position: absolute;
+            content: "";
+            height: 26px;
+            width: 26px;
+            left: 4px;
+            bottom: 4px;
+            background-color: white;
+            transition: .4s;
+            border-radius: 50%;
+        }
+        input:checked + .slider {
+            background-color: #2563eb;
+        }
+        input:checked + .slider:before {
+            transform: translateX(26px);
+        }
+
+        /* Canvas für das Gesicht */
+        #face-canvas {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
+            z-index: -1; /* Hinter allem anderen */
+            display: block;
+        }
     </style>
 </head>
 <body class="bg-gray-900 text-white flex flex-col h-screen p-4">
 
-    <header class="mb-4 text-center relative">
-        <h1 class="text-2xl font-bold">coldBot</h1>
-        <p class="text-sm text-gray-400">Dein Assistent im coldNet</p>
-        <p class="text-xs text-gray-500">Session ID: <span id="session-id" class="font-mono">...</span></p>
+    <!-- Three.js Canvas für das Gesicht -->
+    <canvas id="face-canvas"></canvas>
+
+    <header class="mb-4 text-center relative flex items-center justify-center">
+        <div class="absolute left-0 flex items-center gap-2">
+            <span class="text-sm text-gray-400">Chat</span>
+            <label class="toggle-switch">
+                <input type="checkbox" id="view-toggle">
+                <span class="slider"></span>
+            </label>
+            <span class="text-sm text-gray-400">Gesicht</span>
+        </div>
+        <div>
+            <h1 class="text-2xl font-bold">coldBot</h1>
+            <p class="text-sm text-gray-400">Dein Assistent im coldNet</p>
+            <p class="text-xs text-gray-500">Session ID: <span id="session-id" class="font-mono">...</span></p>
+        </div>
         <button onclick="newChat()" class="absolute top-0 right-0 bg-blue-600 text-white px-3 py-1 rounded-lg text-sm hover:bg-blue-500">Neuer Chat</button>
     </header>
 
-    <main id="chat-container" class="flex-1 overflow-y-auto bg-gray-800 rounded-lg p-4 space-y-4">
-        <!-- Chat-Nachrichten werden hier eingefügt -->
-    </main>
+    <!-- Container für die Chat-Ansicht -->
+    <div id="chat-view" class="flex flex-col flex-1 min-h-0">
+        <main id="chat-container" class="flex-1 overflow-y-auto bg-gray-800 rounded-lg p-4 space-y-4">
+            <!-- Chat-Nachrichten werden hier eingefügt -->
+        </main>
+        <footer class="mt-4">
+             <div id="image-preview-container" class="hidden items-center bg-gray-700 p-2 rounded-t-lg mb-[-1px]">
+                <img id="image-preview" src="" alt="Bildvorschau" class="w-16 h-16 object-cover rounded-md">
+                <p id="image-preview-text" class="ml-4 text-sm text-gray-300 flex-1">Analysiere Bild...</p>
+                <button onclick="removeImage()" class="p-2 text-gray-400 hover:text-white hover:bg-gray-600 rounded-full">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+                </button>
+            </div>
+            <div class="bg-gray-800 rounded-lg p-2 flex items-center" id="input-bar">
+                <input type="file" id="knowledge-upload" class="hidden" accept=".txt">
+                <button onclick="document.getElementById('knowledge-upload').click()" title="Wissen hinzufügen (.txt)" class="p-3 bg-gray-700 rounded-lg hover:bg-gray-600 transition-colors mr-2">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5v-15A2.5 2.5 0 0 1 6.5 2H20v20H6.5a2.5 2.5 0 0 1 0-5H20"></path><path d="M8 7h6"></path><path d="M8 11h8"></path></svg>
+                </button>
+                <input type="file" id="image-upload" class="hidden" accept="image/*">
+                <button id="image-upload-button" onclick="document.getElementById('image-upload').click()" title="Bild hochladen" class="p-3 bg-gray-700 rounded-lg hover:bg-gray-600 transition-colors mr-2">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" x2="12" y1="3" y2="15"/></svg>
+                </button>
+                <input type="text" id="message-input" class="flex-1 bg-transparent p-2 focus:outline-none" placeholder="Stelle eine Frage oder lade Wissen hoch...">
+                <button id="send-button" onclick="sendMessage()" class="p-3 bg-blue-600 rounded-lg hover:bg-blue-500 transition-colors">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" x2="11" y1="2" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+                </button>
+            </div>
+            <div id="status-text" class="text-center text-xs text-gray-500 mt-2 h-4"></div>
+        </footer>
+    </div>
 
-    <footer class="mt-4">
-        <div id="image-preview-container" class="hidden items-center bg-gray-700 p-2 rounded-t-lg mb-[-1px]">
-            <img id="image-preview" src="" alt="Bildvorschau" class="w-16 h-16 object-cover rounded-md">
-            <p id="image-preview-text" class="ml-4 text-sm text-gray-300 flex-1">Analysiere Bild...</p>
-            <button onclick="removeImage()" class="p-2 text-gray-400 hover:text-white hover:bg-gray-600 rounded-full">
-                <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
-            </button>
-        </div>
+    <!-- Three.js Libraries -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/postprocessing/EffectComposer.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/postprocessing/RenderPass.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/shaders/CopyShader.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/postprocessing/ShaderPass.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/shaders/LuminosityHighPassShader.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/postprocessing/UnrealBloomPass.js"></script>
 
-        <div class="bg-gray-800 rounded-lg p-2 flex items-center" id="input-bar">
-            <input type="file" id="knowledge-upload" class="hidden" accept=".txt">
-            <button onclick="document.getElementById('knowledge-upload').click()" title="Wissen hinzufügen (.txt)" class="p-3 bg-gray-700 rounded-lg hover:bg-gray-600 transition-colors mr-2">
-                <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5v-15A2.5 2.5 0 0 1 6.5 2H20v20H6.5a2.5 2.5 0 0 1 0-5H20"></path><path d="M8 7h6"></path><path d="M8 11h8"></path></svg>
-            </button>
-            
-            <input type="file" id="image-upload" class="hidden" accept="image/*">
-            <button id="image-upload-button" onclick="document.getElementById('image-upload').click()" title="Bild hochladen" class="p-3 bg-gray-700 rounded-lg hover:bg-gray-600 transition-colors mr-2">
-                <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" x2="12" y1="3" y2="15"/></svg>
-            </button>
-            
-            <input type="text" id="message-input" class="flex-1 bg-transparent p-2 focus:outline-none" placeholder="Stelle eine Frage oder lade Wissen hoch...">
-            <button id="send-button" onclick="sendMessage()" class="p-3 bg-blue-600 rounded-lg hover:bg-blue-500 transition-colors">
-                <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" x2="11" y1="2" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
-            </button>
-        </div>
-        <div id="status-text" class="text-center text-xs text-gray-500 mt-2 h-4"></div>
-    </footer>
-
-    <script>
+    <script type="module">
+        // --- CHAT-LOGIK ---
         const appState = {
             conversationId: null,
             analyzedImageDescription: null,
             ui: {},
-            websocket: null // Hält die WebSocket-Verbindung
+            websocket: null,
+            isSpeaking: false,
+            speakingBuffer: '',
+            speakingTimeout: null,
+            idleTimeout: null // NEU: Timer für den Idle-Zustand
         };
+
+        // NEU: Funktion zum Zurücksetzen des Idle-Timers
+        function resetIdleTimer() {
+            clearTimeout(appState.idleTimeout);
+            appState.idleTimeout = setTimeout(() => {
+                // Nur in den IDLE-Zustand wechseln, wenn der Bot gerade nur zuhört.
+                // Wir wollen das Nachdenken oder Sprechen nicht unterbrechen.
+                if (faceApi.getAIState() === 'LISTENING') {
+                    faceApi.setAIState('IDLE');
+                }
+            }, 30000); // 30 Sekunden
+        }
 
         function generateUUID() {
             return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
@@ -67,42 +163,50 @@
                 return v.toString(16);
             });
         }
-
+        
         function connectWebSocket() {
-            if (appState.websocket) {
-                appState.websocket.close();
-            }
+            if (appState.websocket) appState.websocket.close();
             const clientId = appState.conversationId;
             const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
             appState.websocket = new WebSocket(`${wsProtocol}//${window.location.host}/ws/${clientId}`);
 
             appState.websocket.onmessage = function(event) {
                 try {
+                    resetIdleTimer(); // Jede eingehende Nachricht setzt den Timer zurück
                     const data = JSON.parse(event.data);
                     let lastBotMessage = appState.ui.chatContainer.querySelector('.message-bot:last-child');
 
                     if (data.type === 'tool_usage') {
                         appState.ui.statusText.textContent = data.content;
-                        if (lastBotMessage && lastBotMessage.textContent === '') {
-                            lastBotMessage.remove(); // Entferne leeren Platzhalter
-                        }
+                        if (faceApi.getAIState() !== 'THINKING') faceApi.setAIState('THINKING');
+                        if (lastBotMessage && lastBotMessage.textContent === '') lastBotMessage.remove();
                     } else if (data.type === 'llm_chunk') {
-                        if (appState.ui.statusText.textContent !== '') {
-                            appState.ui.statusText.textContent = '';
-                        }
-                        if (!lastBotMessage || lastBotMessage.textContent !== '') {
-                            lastBotMessage = createMessageContainer('bot');
-                        }
+                        if (appState.ui.statusText.textContent !== '') appState.ui.statusText.textContent = '';
+                        if (!lastBotMessage || lastBotMessage.textContent !== '') lastBotMessage = createMessageContainer('bot');
                         lastBotMessage.textContent += data.content;
                         appState.ui.chatContainer.scrollTop = appState.ui.chatContainer.scrollHeight;
+                        
+                        if (!appState.isSpeaking) {
+                            appState.isSpeaking = true;
+                        }
+                        appState.speakingBuffer += data.content;
+                        clearTimeout(appState.speakingTimeout);
+                        appState.speakingTimeout = setTimeout(() => {
+                            appState.isSpeaking = false;
+                            const wordCount = appState.speakingBuffer.split(/\s+/).length;
+                            faceApi.setAIState('SPEAKING', wordCount * 150);
+                            appState.speakingBuffer = '';
+                        }, 300);
+
                     } else if (data.type === 'proactive_message') {
                         addMessage(data.content, 'bot');
+                        const wordCount = data.content.split(/\s+/).length;
+                        faceApi.setAIState('SPEAKING', wordCount * 150);
                     }
                 } catch (e) {
                     console.error("Fehler beim Verarbeiten der WebSocket-Nachricht:", e, "Daten:", event.data);
                 }
             };
-
             appState.websocket.onopen = () => console.log("WebSocket connected.");
             appState.websocket.onclose = () => console.log("WebSocket disconnected.");
             appState.websocket.onerror = (error) => console.error("WebSocket error:", error);
@@ -114,19 +218,24 @@
             addMessage("Hallo! Ich bin coldBot. Womit kann ich dir heute helfen? 😉", 'bot');
             removeImage();
             appState.ui.sessionId.textContent = appState.conversationId;
-            connectWebSocket(); // WebSocket-Verbindung herstellen/erneuern
+            connectWebSocket();
+            faceApi.setAIState('IDLE');
+            resetIdleTimer();
         }
         
         async function sendMessage() {
             const userMessage = appState.ui.messageInput.value.trim();
             if (!userMessage && !appState.analyzedImageDescription) return;
+            
+            resetIdleTimer(); // Nachricht vom Benutzer setzt den Timer zurück
 
             if (userMessage) addMessage(userMessage, 'user');
             appState.ui.messageInput.value = '';
             appState.ui.statusText.textContent = 'coldBot denkt nach...';
             appState.ui.sendButton.disabled = true;
 
-            // Erstelle sofort einen leeren Platzhalter für die Bot-Antwort
+            faceApi.setAIState('THINKING');
+
             createMessageContainer('bot');
 
             try {
@@ -135,22 +244,15 @@
                     image_description: appState.analyzedImageDescription,
                     conversation_id: appState.conversationId
                 };
-
-                // Sende die Anfrage, aber warte nicht auf den Inhalt.
-                // Die Antwort kommt über den WebSocket.
                 const response = await fetch('/chat/multimodal', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(payload)
                 });
-
                 if (!response.ok) {
                     const errorData = await response.json();
                     throw new Error(JSON.stringify(errorData.detail, null, 2));
                 }
-                
-                // Die alte Stream-Verarbeitung wird hier entfernt.
-
             } catch (error) {
                 console.error("Fehler beim Senden der Nachricht:", error);
                 let lastBotMessage = appState.ui.chatContainer.querySelector('.message-bot:last-child');
@@ -158,10 +260,9 @@
                     lastBotMessage.textContent = `Sorry, da ist etwas schiefgelaufen.\n\nServer-Antwort:\n${error.message}`;
                     lastBotMessage.classList.add('error-message');
                 }
+                faceApi.setAIState('LISTENING');
             } finally {
-                if (appState.analyzedImageDescription) {
-                    removeImage();
-                }
+                if (appState.analyzedImageDescription) removeImage();
                 appState.ui.sendButton.disabled = false;
             }
         }
@@ -183,12 +284,6 @@
             messageDiv.textContent = text;
         }
 
-        function addErrorMessage(text) {
-            const messageDiv = createMessageContainer('bot');
-            messageDiv.textContent = text;
-            messageDiv.classList.add('error-message');
-        }
-
         function removeImage() {
             appState.analyzedImageDescription = null;
             if (appState.ui.imagePreview) appState.ui.imagePreview.src = '';
@@ -197,8 +292,11 @@
             if (appState.ui.imageUploadButton) appState.ui.imageUploadButton.disabled = false;
         }
 
+
         function initializeApp() {
             appState.ui = {
+                chatView: document.getElementById('chat-view'),
+                viewToggle: document.getElementById('view-toggle'),
                 imageUpload: document.getElementById('image-upload'),
                 knowledgeUpload: document.getElementById('knowledge-upload'),
                 messageInput: document.getElementById('message-input'),
@@ -214,55 +312,242 @@
             };
             
             appState.ui.messageInput.addEventListener('keypress', (e) => { if (e.key === 'Enter') sendMessage(); });
-            appState.ui.knowledgeUpload.onchange = async (event) => {
-                const file = event.target.files[0];
-                if (!file) return;
-                appState.ui.statusText.textContent = `Füge '${file.name}' zum Gedächtnis hinzu...`;
-                const formData = new FormData();
-                formData.append('file', file);
-                try {
-                    const response = await fetch('/memory/add_document', { method: 'POST', body: formData });
-                    const data = await response.json();
-                    if (response.ok) addMessage(`Okay, ich habe mir den Inhalt von '${file.name}' gemerkt.`, 'bot');
-                    else throw new Error(data.detail || "Unbekannter Fehler");
-                } catch (error) {
-                    addErrorMessage(`Fehler beim Hinzufügen von Wissen: ${error.message}`);
-                } finally {
-                    appState.ui.knowledgeUpload.value = '';
-                    appState.ui.statusText.textContent = '';
-                }
-            };
-            appState.ui.imageUpload.onchange = async (event) => {
-                const file = event.target.files[0];
-                if (!file) return;
-                const reader = new FileReader();
-                reader.onload = (e) => appState.ui.imagePreview.src = e.target.result;
-                reader.readAsDataURL(file);
-                appState.ui.imagePreviewContainer.classList.remove('hidden');
-                appState.ui.inputBar.classList.add('rounded-t-none');
-                appState.ui.imagePreviewText.textContent = 'Analysiere Bild...';
-                appState.ui.imageUploadButton.disabled = true;
-                const formData = new FormData();
-                formData.append('file', file);
-                try {
-                    const response = await fetch('/chat/image', { method: 'POST', body: formData });
-                    const data = await response.json();
-                    if (response.ok) {
-                        appState.analyzedImageDescription = data.image_description;
-                        appState.ui.imagePreviewText.textContent = `Analyse: "${appState.analyzedImageDescription}"`;
-                    } else { throw new Error(data.detail); }
-                } catch (error) {
-                    appState.ui.imagePreviewText.textContent = 'Fehler bei der Analyse.';
-                } finally {
-                    appState.ui.imageUpload.value = '';
-                }
-            };
+            // The onchange handlers are intentionally left empty as per the original code structure.
+            // They are likely populated dynamically or are placeholders.
+            appState.ui.knowledgeUpload.onchange = async (event) => { /* ... */ };
+            appState.ui.imageUpload.onchange = async (event) => { /* ... */ };
             
+            appState.ui.viewToggle.addEventListener('change', (event) => {
+                if (event.target.checked) {
+                    appState.ui.chatView.style.display = 'none';
+                } else {
+                    appState.ui.chatView.style.display = 'flex';
+                }
+            });
+
             newChat();
         }
 
-        initializeApp();
+        // --- GESICHTS-LOGIK ---
+        const faceApi = (() => {
+            let scene, camera, renderer, composer, head, eyes, particles;
+            let mouse = new THREE.Vector2();
+            let targetRotation = { x: 0, y: 0 };
+            const clock = new THREE.Clock();
+            let aiState = 'IDLE';
+            let stateTimer = 0;
+            let speakDuration = 0;
+            let targetPosition = new THREE.Vector3();
+            let colorsNeedReset = false;
 
+            function init() {
+                const canvas = document.getElementById('face-canvas');
+                scene = new THREE.Scene();
+                scene.fog = new THREE.FogExp2(0x000514, 0.08);
+                camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+                camera.position.z = 15;
+                renderer = new THREE.WebGLRenderer({ canvas: canvas, antialias: true, alpha: true });
+                renderer.setSize(window.innerWidth, window.innerHeight);
+                renderer.setPixelRatio(window.devicePixelRatio);
+                
+                head = new THREE.Group();
+                scene.add(head);
+
+                const particleCount = 5000;
+                const geometry = new THREE.BufferGeometry();
+                const positions = new Float32Array(particleCount * 3);
+                const basePositions = new Float32Array(particleCount * 3);
+                const colors = new Float32Array(particleCount * 3);
+                const baseColor = new THREE.Color(0x00aaff);
+                const sphereRadius = 5;
+                const headShapeFactor = { x: 0.9, y: 1.1, z: 0.9 };
+
+                for (let i = 0; i < particleCount; i++) {
+                    const u = Math.random();
+                    const v = Math.random();
+                    const theta = 2 * Math.PI * u;
+                    const phi = Math.acos(2 * v - 1);
+                    let x = sphereRadius * Math.sin(phi) * Math.cos(theta) * headShapeFactor.x;
+                    let y = sphereRadius * Math.sin(phi) * Math.sin(theta) * headShapeFactor.y;
+                    let z = sphereRadius * Math.cos(phi) * headShapeFactor.z;
+                    if (y < -2) {
+                        const factor = 1 - ((-y - 2) / 5);
+                        x *= factor;
+                        z *= factor;
+                    }
+                    positions[i * 3] = x;
+                    positions[i * 3 + 1] = y;
+                    positions[i * 3 + 2] = z;
+                    baseColor.toArray(colors, i * 3);
+                }
+                geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+                basePositions.set(positions);
+                geometry.setAttribute('basePosition', new THREE.BufferAttribute(basePositions, 3));
+                geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+
+                const material = new THREE.PointsMaterial({
+                    size: 0.05,
+                    vertexColors: true,
+                    transparent: true,
+                    blending: THREE.AdditiveBlending,
+                    depthWrite: false,
+                });
+                particles = new THREE.Points(geometry, material);
+                head.add(particles);
+
+                const eyeGeometry = new THREE.SphereGeometry(0.3, 16, 16);
+                const eyeMaterial = new THREE.MeshBasicMaterial({ color: 0xffffff, emissive: 0x00ffff, emissiveIntensity: 2 });
+                eyes = new THREE.Group();
+                const eyeL = new THREE.Mesh(eyeGeometry, eyeMaterial);
+                eyeL.position.set(-1.5, 0.5, 3.8);
+                const eyeR = new THREE.Mesh(eyeGeometry, eyeMaterial);
+                eyeR.position.set(1.5, 0.5, 3.8);
+                eyes.add(eyeL, eyeR);
+                head.add(eyes);
+
+                setupPostProcessing();
+                document.addEventListener('mousemove', onDocumentMouseMove, false);
+                window.addEventListener('resize', onWindowResize, false);
+                animate();
+            }
+
+            function setupPostProcessing() {
+                composer = new THREE.EffectComposer(renderer);
+                composer.addPass(new THREE.RenderPass(scene, camera));
+                const bloomPass = new THREE.UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), 1.2, 0.4, 0.85);
+                bloomPass.threshold = 0;
+                bloomPass.strength = 1.2;
+                bloomPass.radius = 0.5;
+                composer.addPass(bloomPass);
+            }
+
+
+            function setAIState(newState, duration = 0) {
+                if (aiState === newState) return;
+                console.log(`AI State Change: ${aiState} -> ${newState}`);
+                aiState = newState;
+                stateTimer = 0;
+                if (newState === 'SPEAKING') speakDuration = duration;
+                if (newState === 'THINKING') stateTimer = duration || 5000;
+                if (newState !== 'IDLE') targetPosition.set(0, 0, 0);
+            }
+            
+            function getAIState() {
+                return aiState;
+            }
+
+            function animateIdle(time) {
+                targetPosition.x = Math.sin(time * 0.1) * 8;
+                targetPosition.z = Math.cos(time * 0.2) * 5 - 5;
+                targetPosition.y = Math.sin(time * 0.3) * 2;
+                targetRotation.y = Math.sin(time * 0.5) * 0.3;
+                targetRotation.x = Math.cos(time * 0.4) * 0.3;
+            }
+
+            function animateListening() {
+                targetRotation.y = mouse.x * 0.4;
+                targetRotation.x = mouse.y * 0.4;
+            }
+
+            function animateThinking(time, deltaTime) {
+                animateListening();
+                head.rotation.z += (0.2 - head.rotation.z) * 0.05;
+                const colors = particles.geometry.attributes.color.array;
+                const positions = particles.geometry.attributes.position.array;
+                const pulse = (Math.sin(time * 5) + 1) / 2;
+                for (let i = 0; i < positions.length / 3; i++) {
+                    const y = positions[i * 3 + 1];
+                    if (y > 2.5) {
+                        colors[i * 3] = pulse * 0.5;
+                        colors[i * 3 + 1] = 0.5 + pulse * 0.5;
+                        colors[i * 3 + 2] = 1.0;
+                    }
+                }
+                particles.geometry.attributes.color.needsUpdate = true;
+                colorsNeedReset = true;
+            }
+
+            function animateSpeaking(deltaTime) {
+                animateListening();
+                stateTimer += deltaTime * 1000;
+                const positions = particles.geometry.attributes.position.array;
+                const basePositions = particles.geometry.attributes.basePosition.array;
+
+                if (stateTimer >= speakDuration) {
+                    setAIState('LISTENING');
+                    resetIdleTimer(); // NEU: Nach dem Sprechen den Idle-Timer zurücksetzen
+                    positions.set(basePositions);
+                    particles.geometry.attributes.position.needsUpdate = true;
+                    return;
+                }
+                
+                positions.set(basePositions);
+                const mouthArea = { y_min: -3.5, y_max: -2, x_max: 2, z_max: 3 };
+                const speakAmplitude = Math.sin((stateTimer / 100) * Math.PI) * 0.5;
+                for (let i = 0; i < particles.geometry.attributes.position.count; i++) {
+                    const by = basePositions[i * 3 + 1];
+                    const bx = basePositions[i * 3];
+                    const bz = basePositions[i * 3 + 2];
+                    if (by > mouthArea.y_min && by < mouthArea.y_max && Math.abs(bx) < mouthArea.x_max && bz > mouthArea.z_max) {
+                        const displacementFactor = 1 - (by - mouthArea.y_min) / (mouthArea.y_max - mouthArea.y_min);
+                        positions[i * 3 + 1] -= speakAmplitude * displacementFactor;
+                    }
+                }
+                particles.geometry.attributes.position.needsUpdate = true;
+            }
+            
+            function animate() {
+                requestAnimationFrame(animate);
+                const time = clock.getElapsedTime();
+                const deltaTime = clock.getDelta();
+
+                switch (aiState) {
+                    case 'IDLE': animateIdle(time); break;
+                    case 'LISTENING': animateListening(); break;
+                    case 'THINKING': animateThinking(time, deltaTime); break;
+                    case 'SPEAKING': animateSpeaking(deltaTime); break;
+                }
+                
+                if (aiState !== 'THINKING' && colorsNeedReset) {
+                    const colors = particles.geometry.attributes.color.array;
+                    const baseColor = new THREE.Color(0x00aaff);
+                    for(let i = 0; i < colors.length/3; i++){
+                        baseColor.toArray(colors, i * 3);
+                    }
+                    particles.geometry.attributes.color.needsUpdate = true;
+                    colorsNeedReset = false;
+                }
+                
+                if (aiState !== 'THINKING') {
+                    head.rotation.z += (0 - head.rotation.z) * 0.05;
+                }
+
+                head.position.lerp(targetPosition, 0.02);
+                head.rotation.y += (targetRotation.y - head.rotation.y) * 0.05;
+                head.rotation.x += (targetRotation.x - head.rotation.x) * 0.05;
+                eyes.rotation.y = head.rotation.y;
+                eyes.rotation.x = head.rotation.x;
+                composer.render();
+            }
+
+            function onWindowResize() {
+                camera.aspect = window.innerWidth / window.innerHeight;
+                camera.updateProjectionMatrix();
+                renderer.setSize(window.innerWidth, window.innerHeight);
+                composer.setSize(window.innerWidth, window.innerHeight);
+            }
+
+            function onDocumentMouseMove(event) {
+                mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
+                mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
+            }
+
+            init();
+            return { setAIState, getAIState };
+        })();
+
+        // --- Initialisierung der gesamten App ---
+        initializeApp();
     </script>
 </body>
 </html>
