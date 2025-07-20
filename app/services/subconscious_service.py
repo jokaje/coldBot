@@ -18,11 +18,17 @@ class SubconsciousService:
     model: Llama = None
     grammar: LlamaGrammar = None 
     
-    last_state: Dict[str, str] = {
+    # Pfad zur Speicherdatei für den Zustand
+    _state_file_path = "subconscious_state.json"
+
+    # Der Standardzustand, falls keine Speicherdatei existiert
+    _default_state: Dict[str, str] = {
         "internal_thought": "Ich bin gerade aufgewacht und bereit zu helfen.",
         "suggested_stance": "freundlich und offen",
         "current_activity": "warten"
     }
+    
+    last_state: Dict[str, str] = {}
     
     input_queue: queue.Queue = queue.Queue()
     _lock = threading.Lock()
@@ -52,7 +58,36 @@ Deine Kern-Axiome (deine unveränderliche Persönlichkeit) sind:
             print("Initializing Subconscious GGUF model... This may take a moment.")
             cls.model = Llama(model_path=model_path, n_ctx=2048, n_gpu_layers=-1, verbose=False)
             print("Subconscious model loaded successfully.")
+
+            # KORREKTUR: Zustand auf der erstellten Instanz laden, nicht auf der Klasse
+            cls._instance._load_state()
+
         return cls._instance
+
+    # Methode zum Laden des Zustands aus der Datei
+    def _load_state(self):
+        with self._lock:
+            if os.path.exists(self._state_file_path):
+                try:
+                    with open(self._state_file_path, 'r', encoding='utf-8') as f:
+                        self.last_state = json.load(f)
+                        print(f"Subconscious state loaded from {self._state_file_path}")
+                        return
+                except (json.JSONDecodeError, IOError) as e:
+                    print(f"Error loading state file, using default state. Error: {e}")
+            
+            # Wenn Datei nicht existiert oder fehlerhaft ist, Standardzustand verwenden und speichern
+            self.last_state = self._default_state.copy()
+            self._save_state()
+
+    # Methode zum Speichern des Zustands in der Datei
+    def _save_state(self):
+        try:
+            with open(self._state_file_path, 'w', encoding='utf-8') as f:
+                json.dump(self.last_state, f, indent=4, ensure_ascii=False)
+        except IOError as e:
+            print(f"Error saving state file: {e}")
+
 
     def get_last_subconscious_state(self) -> Dict[str, str]:
         with self._lock:
@@ -61,6 +96,8 @@ Deine Kern-Axiome (deine unveränderliche Persönlichkeit) sind:
     def _update_subconscious_state(self, new_state: Dict[str, str]):
         with self._lock:
             self.last_state = new_state
+            # Nach jeder Aktualisierung den Zustand speichern
+            self._save_state()
 
     def start_thought_loop(self):
         if not hasattr(self, 'thought_thread') or not self.thought_thread.is_alive():
@@ -118,7 +155,7 @@ Deine Kern-Axiome (deine unveränderliche Persönlichkeit) sind:
                         new_state = json.loads(json_str)
                         if "internal_thought" in new_state and "suggested_stance" in new_state and "current_activity" in new_state:
                             self._update_subconscious_state(new_state)
-                            print(f"Subconscious state updated: {new_state}")
+                            print(f"Subconscious state updated and saved: {new_state}")
                         else:
                             print(f"Subconscious produced valid JSON but with missing keys: {json_str}")
                     else:
