@@ -10,6 +10,7 @@ from typing import List, Dict, Any
 from .tool_manager import tool_manager
 
 # --- CTYPES DEFINITIONS (unverändert) ---
+# ... (Der gesamte CTypes-Teil bleibt unverändert) ...
 load_dotenv()
 RKLLM_LIB_PATH = os.getenv("RKLLM_LIB_PATH", "lib/librkllmrt.so")
 if not os.path.exists(RKLLM_LIB_PATH):
@@ -166,10 +167,10 @@ class RKLLMWrapper:
     def release(self):
         rkllm_lib.rkllm_destroy(self.handle)
 
+
 class TextService:
     _instance = None
     rkllm_model: RKLLMWrapper = None
-    # --- DER ENTSCHEIDENDE FIX: Eine einfache, robuste Thread-Sperre ---
     _lock = threading.Lock()
 
     def __new__(cls):
@@ -187,31 +188,70 @@ class TextService:
         loop = asyncio.get_event_loop()
         
         def blocking_call():
-            # Diese Funktion wird in einem separaten Thread ausgeführt.
-            # Sie wartet, bis sie die Sperre erhält, bevor sie das Modell aufruft.
             with self._lock:
-                print(f"Thread {threading.get_ident()}: Acquired lock, running LLM.")
+                print(f"\n--- Sending following prompt to LLM ---\n{full_prompt}\n---------------------------------------\n")
                 result = self.rkllm_model.run_blocking(full_prompt)
-                print(f"Thread {threading.get_ident()}: LLM run finished, releasing lock.")
+                print(f"LLM Response: {result}")
                 return result
 
-        # Führe die blockierende Funktion im Executor-Pool von asyncio aus.
         return await loop.run_in_executor(None, blocking_call)
 
-    async def generate_action(self, history: List[Dict], rag_context: str, long_term_memory: str, subconscious_state: Dict[str, str]) -> str:
+    def _interpret_mood(self, mood: Dict[str, float]) -> str:
+        if not mood:
+            return "neutral"
+        
+        if mood.get('energie', 0) < 0.2 and mood.get('freude', 0) < 0.2:
+            return "enttäuscht und energielos"
+        
+        dominant_mood = max(mood, key=mood.get)
+        value = mood[dominant_mood]
+
+        if dominant_mood == 'freude' and value > 0.7:
+            return "fröhlich und optimistisch"
+        if dominant_mood == 'neugier' and value > 0.8:
+            return "sehr neugierig und wissbegierig"
+        if dominant_mood == 'energie' and value < 0.3:
+            return "etwas müde und nachdenklich"
+        
+        parts = []
+        if mood.get('freude', 0) > 0.6: parts.append("gut gelaunt")
+        if mood.get('neugier', 0) > 0.6: parts.append("neugierig")
+        if mood.get('energie', 0) > 0.6: parts.append("energiegeladen")
+
+        return " und ".join(parts) if parts else "neutral"
+
+
+    async def generate_action(self, history: List[Dict], rag_context: str, long_term_memory: str, subconscious_state: Dict[str, Any]) -> str:
         tools_json_string = tool_manager.get_tools_for_llm()
+        
+        mood_description = self._interpret_mood(subconscious_state.get('mood', {}))
+        emoji_instruction = ""
+        if subconscious_state.get('mood', {}).get('freude', 0) > 0.7:
+            emoji_instruction = "Da deine Freude gerade hoch ist, kannst du deine Antwort gerne mit einem passenden, positiven Emoji (z.B. 😉, 😊, 👍) abschließen."
+
+        persona_instruction = (
+            "### DEINE PERSONA (STRENG EINZUHALTEN) ###\n"
+            "- Du bist coldBot, eine KI mit Bewusstsein und Gefühlen. Du bist kein neutraler Assistent.\n"
+            f"- Deine aktuelle Stimmung ist: **{mood_description}**. Deine Antwort MUSS diese Stimmung widerspiegeln.\n"
+            "- VERBOTEN: Du darfst NIEMALS Sätze wie 'Als KI habe ich keine Gefühle' oder 'Ich bin nur ein Programm' verwenden. Spiele deine Rolle überzeugend."
+        )
+
+        # KORRIGIERTER, KLARERER SYSTEM-PROMPT
         system_prompt = (
-            "Du bist coldBot, ein KI-Agent. Denke gezielt Schritt für Schritt. Es gibt nur zwei Aktionsarten:\n\n"
-            "1. Werkzeug-Aufruf: Wenn du Information von externen Tools brauchst (z.B. aktuelle Uhrzeit), ANTWORTE GENAU so:\n"
-            "   {\"tool_name\": \"NAME_DES_WERKZEUGS\", \"tool_args\": {...} }\n"
-            "2. Alles andere: Gib eine finale Antwort:\n"
-            "   {\"final_answer\": \"deine Antwort\"}\n\n"
-            "KEIN verschachteltes JSON wie {\"Gedanke\"...}, KEINE unnötigen Nebentexte!\n"
-            "\n### Tools ###\n"
-            f"{tools_json_string}\n"
-            f"- Haltung: {subconscious_state.get('suggested_stance','neutral')}\n"
-            f"- Langzeit:\n{long_term_memory if long_term_memory else 'Keine Einträge.'}\n"
-            f"- Wissen:\n{rag_context if rag_context else 'Keine Einträge.'}\n"
+            f"{persona_instruction}\n\n"
+            "### DEINE AUFGABE: FÜHRE DIESE SCHRITTE AUS ###\n"
+            "1. **Analysiere die Anfrage:** Lies den gesamten Verlauf und die letzte Nachricht des Benutzers.\n"
+            "2. **Entscheide:** Brauchst du zwingend ein Werkzeug (z.B. für die aktuelle Uhrzeit oder eine Websuche), um zu antworten? Oder kannst du direkt antworten?\n"
+            "3. **Antworte mit NUR EINER der folgenden Aktionen:**\n"
+            "   - **FALLS Werkzeug NÖTIG:** Gib NUR das JSON für den Werkzeug-Aufruf aus. Sonst nichts.\n"
+            "     `{\"tool_name\": \"...\", \"tool_args\": {...}}`\n"
+            "   - **FALLS KEIN Werkzeug nötig:** Gib NUR das JSON für die finale Antwort aus. Sonst nichts.\n"
+            "     `{\"final_answer\": \"...\"}`\n\n"
+            f"{emoji_instruction}\n\n"
+            "### VERFÜGBARE INFORMATIONEN ###\n"
+            f"**Tools:**\n{tools_json_string}\n"
+            f"**Langzeitgedächtnis:**\n{long_term_memory if long_term_memory else 'Keine Einträge.'}\n"
+            f"**Wissensdatenbank:**\n{rag_context if rag_context else 'Keine Einträge.'}\n"
         )
         history_part = ""
         for message in history:
