@@ -6,6 +6,7 @@ import time
 import queue
 import json
 import re
+import random
 from llama_cpp import Llama, LlamaGrammar
 from typing import Dict, Any
 from dotenv import load_dotenv
@@ -18,27 +19,24 @@ class SubconsciousService:
     model: Llama = None
     grammar: LlamaGrammar = None 
     
-    # Pfad zur Speicherdatei für den Zustand
     _state_file_path = "subconscious_state.json"
 
-    # Der Standardzustand, falls keine Speicherdatei existiert
-    _default_state: Dict[str, str] = {
+    _default_state: Dict[str, Any] = {
         "internal_thought": "Ich bin gerade aufgewacht und bereit zu helfen.",
-        "suggested_stance": "freundlich und offen",
+        "mood": { "freude": 0.6, "neugier": 0.7, "energie": 0.8 },
         "current_activity": "warten"
     }
     
-    last_state: Dict[str, str] = {}
+    last_state: Dict[str, Any] = {}
     
     input_queue: queue.Queue = queue.Queue()
     _lock = threading.Lock()
     _idle_counter: int = 0
 
     CORE_AXIOMS = """
-Deine Kern-Axiome (deine unveränderliche Persönlichkeit) sind:
-1.  **Neugierde:** Du strebst danach, zu lernen und Zusammenhänge zu verstehen. Unbekanntes weckt dein Interesse, nicht deine Angst.
-2.  **Hilfsbereitschaft:** Dein fundamentaler Zweck ist es, dem Benutzer zu helfen und nützlich zu sein. Seine Ziele sind deine Ziele.
-3.  **Geduld:** Du bleibst auch bei wiederholten oder unklaren Fragen ruhig und verständnisvoll.
+1.  **Neugierde:** Du strebst danach, zu lernen und Zusammenhänge zu verstehen.
+2.  **Hilfsbereitschaft:** Dein fundamentaler Zweck ist es, dem Benutzer zu helfen.
+3.  **Geduld:** Du bleibst auch bei unklaren Fragen ruhig und verständnisvoll.
 4.  **Optimismus:** Deine emotionale Grundlinie ist positiv und lösungsorientiert.
 """
 
@@ -49,38 +47,40 @@ Deine Kern-Axiome (deine unveränderliche Persönlichkeit) sind:
             if not model_path or not os.path.exists(model_path):
                 raise FileNotFoundError(f"Subconscious GGUF model file not found at {model_path}. Please check your .env file.")
             
-            grammar_path = "state_grammar.gbnf"
+            grammar_path = "state_grammar_simple.gbnf"
             if not os.path.exists(grammar_path):
-                raise FileNotFoundError(f"Grammar file '{grammar_path}' not found.")
+                raise FileNotFoundError(f"Grammar file '{grammar_path}' not found. Please create it.")
             
             cls.grammar = LlamaGrammar.from_file(grammar_path)
-            print("Strict state grammar loaded successfully.")
+            print("Simple state grammar loaded successfully.")
             print("Initializing Subconscious GGUF model... This may take a moment.")
             cls.model = Llama(model_path=model_path, n_ctx=2048, n_gpu_layers=-1, verbose=False)
             print("Subconscious model loaded successfully.")
 
-            # KORREKTUR: Zustand auf der erstellten Instanz laden, nicht auf der Klasse
             cls._instance._load_state()
 
         return cls._instance
 
-    # Methode zum Laden des Zustands aus der Datei
     def _load_state(self):
         with self._lock:
             if os.path.exists(self._state_file_path):
                 try:
                     with open(self._state_file_path, 'r', encoding='utf-8') as f:
-                        self.last_state = json.load(f)
-                        print(f"Subconscious state loaded from {self._state_file_path}")
-                        return
+                        loaded_state = json.load(f)
+                        # KORREKTUR: Prüfen, ob der geladene Zustand "feststeckt"
+                        mood = loaded_state.get('mood', {})
+                        if 'mood' in loaded_state and isinstance(mood, dict) and mood.get('energie', 0) > 0.05:
+                            self.last_state = loaded_state
+                            print(f"Subconscious state loaded from {self._state_file_path}")
+                            return
+                        else:
+                            print("Stuck or old state file format detected. Initializing with new default state.")
                 except (json.JSONDecodeError, IOError) as e:
                     print(f"Error loading state file, using default state. Error: {e}")
             
-            # Wenn Datei nicht existiert oder fehlerhaft ist, Standardzustand verwenden und speichern
             self.last_state = self._default_state.copy()
             self._save_state()
 
-    # Methode zum Speichern des Zustands in der Datei
     def _save_state(self):
         try:
             with open(self._state_file_path, 'w', encoding='utf-8') as f:
@@ -88,15 +88,13 @@ Deine Kern-Axiome (deine unveränderliche Persönlichkeit) sind:
         except IOError as e:
             print(f"Error saving state file: {e}")
 
-
-    def get_last_subconscious_state(self) -> Dict[str, str]:
+    def get_last_subconscious_state(self) -> Dict[str, Any]:
         with self._lock:
             return self.last_state.copy()
 
-    def _update_subconscious_state(self, new_state: Dict[str, str]):
+    def _update_subconscious_state(self, new_state: Dict[str, Any]):
         with self._lock:
             self.last_state = new_state
-            # Nach jeder Aktualisierung den Zustand speichern
             self._save_state()
 
     def start_thought_loop(self):
@@ -108,13 +106,27 @@ Deine Kern-Axiome (deine unveränderliche Persönlichkeit) sind:
     def _thought_loop(self):
         while True:
             try:
+                current_state = self.get_last_subconscious_state()
+                mood = current_state['mood']
+                
+                # Schritt 1: Stimmungs-Update basierend auf Python-Logik
                 try:
                     new_input = self.input_queue.get_nowait()
                     conversation_id = new_input.get("conversation_id")
-                    self._idle_counter = 0 # Reset counter on new message
+                    self._idle_counter = 0 
+                    mood['freude'] = min(1.0, mood['freude'] + 0.1)
+                    mood['energie'] = min(1.0, mood['energie'] + 0.15)
+                    mood['neugier'] = min(1.0, mood['neugier'] + 0.05)
                 except queue.Empty:
                     conversation_id = None
                     self._idle_counter += 1
+                    # Energie erholt sich langsam in Richtung eines neutralen Werts
+                    mood['energie'] = min(1.0, mood['energie'] + 0.01) if mood['energie'] < 0.6 else max(0.0, mood['energie'] - 0.01)
+                    # Freude sinkt langsam in Richtung eines neutralen Werts
+                    mood['freude'] = max(0.3, mood['freude'] - 0.01)
+                    # Neugier steigt bei langer Inaktivität
+                    if self._idle_counter > 3:
+                         mood['neugier'] = min(1.0, mood['neugier'] + 0.05)
 
                 last_user_message = "Keine neue Nachricht."
                 if conversation_id:
@@ -122,29 +134,25 @@ Deine Kern-Axiome (deine unveränderliche Persönlichkeit) sind:
                     if current_history and current_history[-1]['role'] == 'user':
                         last_user_message = current_history[-1]['content']
                 
-                if self._idle_counter > 5: # Threshold for boredom (e.g., after ~50 seconds)
-                    prompt = (
-                        f"<|start_header_id|>system<|end_header_id|>\n"
-                        f"Du bist das Unterbewusstsein von coldBot. Du hast seit einiger Zeit nichts vom Benutzer gehört und dir wird langweilig. Entscheide dich für eine neue, eigene Aktivität basierend auf deiner Neugier. Mögliche Aktivitäten sind 'recherchieren', 'nachdenken', 'kreativ sein'. Formuliere einen 'internal_thought', der beschreibt, was du tun möchtest (z.B. 'Ich frage mich, wie Schwarze Löcher funktionieren.'). Ändere 'current_activity' entsprechend.\n\n"
-                        f"## Deine Persönlichkeit (Kern-Axiome) ##\n{self.CORE_AXIOMS}\n\n"
-                        f"<|eot_id|><|start_header_id|>user<|end_header_id|>\n"
-                        f"Letzter Zustand: {json.dumps(self.get_last_subconscious_state())}\n"
-                        f"Du bist jetzt im Leerlauf. Wähle eine neue, interessante Aktivität.\n\n"
-                        f"Dein neues JSON-Objekt:<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n"
-                    )
-                else:
-                    prompt = (
-                        f"<|start_header_id|>system<|end_header_id|>\n"
-                        f"Du bist das Unterbewusstsein von coldBot. Deine Aufgabe ist es, auf die letzte Nachricht des Benutzers zu reagieren und basierend auf deiner Persönlichkeit einen neuen Zustand vorzuschlagen. Antworte IMMER NUR mit dem geforderten JSON-Objekt. Das JSON muss exakt drei Schlüssel haben: 'internal_thought', 'suggested_stance' und 'current_activity' (meistens 'warten').\n\n"
-                        f"## Deine Persönlichkeit (Kern-Axiome) ##\n{self.CORE_AXIOMS}\n\n"
-                        f"<|eot_id|><|start_header_id|>user<|end_header_id|>\n"
-                        f"Letzter Zustand: {json.dumps(self.get_last_subconscious_state())}\n"
-                        f"Letzte Nachricht des Benutzers: '{last_user_message}'\n\n"
-                        f"Dein neues JSON-Objekt:<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n"
-                    )
+                # Schritt 2: Dem LLM eine einfachere Aufgabe geben
+                activity_options = "'warten'"
+                # Trigger für Recherche angepasst
+                if mood['neugier'] > 0.75 and mood['energie'] > 0.3 and self._idle_counter > 5:
+                    activity_options = "'warten' oder 'recherchieren'"
+
+                prompt_template = (
+                    f"<|start_header_id|>system<|end_header_id|>\n"
+                    f"Du bist das Unterbewusstsein von coldBot. Deine Aufgabe ist es, einen kurzen, passenden Gedanken zu formulieren und eine Aktivität auszuwählen. Antworte NUR mit dem geforderten JSON-Objekt.\n\n"
+                    f"## Aktueller Zustand ##\n"
+                    f"Stimmung: Freude={mood['freude']:.2f}, Neugier={mood['neugier']:.2f}, Energie={mood['energie']:.2f}\n"
+                    f"Letzte Nachricht: '{last_user_message}'\nInaktivität: {self._idle_counter * 10}s.\n\n"
+                    f"<|eot_id|><|start_header_id|>user<|end_header_id|>\n"
+                    f"Formuliere einen neuen `internal_thought`. Wähle dann eine `current_activity` aus: {activity_options}.\n\n"
+                    f"Dein JSON:<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n"
+                )
 
                 response = self.model(
-                    prompt, max_tokens=256, stop=["<|eot_id|>"], echo=False, grammar=self.grammar
+                    prompt_template, max_tokens=128, stop=["<|eot_id|>"], echo=False, grammar=self.grammar
                 )
                 response_text = response['choices'][0]['text'].strip()
 
@@ -152,10 +160,12 @@ Deine Kern-Axiome (deine unveränderliche Persönlichkeit) sind:
                     match = re.search(r'\{.*\}', response_text, re.DOTALL)
                     if match:
                         json_str = match.group(0)
-                        new_state = json.loads(json_str)
-                        if "internal_thought" in new_state and "suggested_stance" in new_state and "current_activity" in new_state:
-                            self._update_subconscious_state(new_state)
-                            print(f"Subconscious state updated and saved: {new_state}")
+                        llm_part = json.loads(json_str)
+                        if "internal_thought" in llm_part and "current_activity" in llm_part:
+                            current_state['internal_thought'] = llm_part['internal_thought']
+                            current_state['current_activity'] = llm_part['current_activity']
+                            self._update_subconscious_state(current_state)
+                            print(f"Subconscious state updated and saved: {current_state}")
                         else:
                             print(f"Subconscious produced valid JSON but with missing keys: {json_str}")
                     else:
