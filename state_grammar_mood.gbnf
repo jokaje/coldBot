@@ -1,0 +1,12 @@
+# Definiert ein Objekt mit exakt zwei erforderlichen Schlüsseln
+root ::= "{" ws "\"internal_thought\"" ws ":" ws string "," ws "\"current_activity\"" ws ":" ws string "}"
+
+# Standarddefinitionen für JSON-Werte
+string ::=
+  "\"" (
+    [^"\\] |
+    "\\" (["\\/bfnrt] | "u" [0-9a-fA-F] [0-9a-fA-F] [0-9a-fA-F] [0-9a-fA-F])
+  )* "\""
+
+# Optionaler Leerraum
+ws ::= ([ \t\n]*)
